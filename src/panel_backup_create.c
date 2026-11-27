@@ -74,22 +74,73 @@ static bool copy_database(sqlite3 *source, sqlite3 *target)
     return copied == SQLITE_DONE && finished == SQLITE_OK;
 }
 
-static bool create_snapshot(const char *original, const char *snapshot)
+static int open_private_file(const char *path)
 {
+#ifdef _WIN32
+    return _open(path, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT, _S_IREAD | _S_IWRITE);
+#else
+    return open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+#endif
+}
+
+static bool check_database(sqlite3 *db)
+{
+    sqlite3_stmt *statement = NULL;
+    bool valid = sqlite3_prepare_v2(db, "PRAGMA integrity_check(1)", -1, &statement, NULL) == SQLITE_OK &&
+                 sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_type(statement, 0) == SQLITE_TEXT &&
+                 sqlite3_column_bytes(statement, 0) == 2 &&
+                 !memcmp(sqlite3_column_text(statement, 0), "ok", 2) && sqlite3_step(statement) == SQLITE_DONE;
+    sqlite3_finalize(statement);
+    return valid;
+}
+
+bool panel_backup_snapshot_database(const char *original, const char *snapshot, enum panel_backup_database kind)
+{
+    const char *clean;
+    switch (kind) {
+    case PANEL_BACKUP_DATABASE_COPY:
+        clean = "";
+        break;
+    case PANEL_BACKUP_DATABASE_AUTH:
+        clean = "DELETE FROM panel_sessions; VACUUM;";
+        break;
+    case PANEL_BACKUP_DATABASE_SECURITY:
+        clean = "PRAGMA foreign_keys = ON; DELETE FROM security_factor WHERE enabled=0; VACUUM;";
+        break;
+    default:
+        return false;
+    }
+    if (!original || !snapshot)
+        return false;
+#ifdef _WIN32
+    DWORD attributes = GetFileAttributesA(original);
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)))
+        return false;
+#else
+    struct stat info;
+    if (lstat(original, &info) != 0 || !S_ISREG(info.st_mode))
+        return false;
+#endif
+    int fd = open_private_file(snapshot);
+    if (fd < 0)
+        return false;
     sqlite3 *source = NULL;
     sqlite3 *target = NULL;
     /* The source read transaction fixes both the size check and the copied pages at the same point in time. */
-    bool success = open_database(original, SQLITE_OPEN_READONLY, &source) &&
+    bool success = close_file(fd) == 0 && open_database(original, SQLITE_OPEN_READONLY, &source) &&
                    execute(source, "BEGIN") && snapshot_size_ok(source) &&
-                   open_database(snapshot, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, &target) &&
+                   open_database(snapshot, SQLITE_OPEN_READWRITE, &target) &&
                    copy_database(source, target);
     sqlite3_close(source);
 
-    if (success) {
-        success = execute(target, "PRAGMA journal_mode = DELETE; PRAGMA temp_store = FILE;"
-                                  "PRAGMA trusted_schema = OFF; DELETE FROM panel_sessions; VACUUM;");
-    }
-    return sqlite3_close(target) == SQLITE_OK && success;
+    success = success && execute(target, "PRAGMA journal_mode = DELETE; PRAGMA temp_store = FILE;"
+                                         "PRAGMA trusted_schema = OFF; PRAGMA cache_size = -1024;") &&
+              execute(target, clean) && check_database(target);
+    success = sqlite3_close(target) == SQLITE_OK && success;
+    if (!success)
+        remove(snapshot);
+    return success;
 }
 
 static bool write_database_member(struct archive *archive, FILE *snapshot, long file_size)
@@ -117,15 +168,6 @@ static bool write_database_member(struct archive *archive, FILE *snapshot, long 
     return archive_write_finish_entry(archive) == ARCHIVE_OK;
 }
 
-static int open_archive_file(const char *path)
-{
-#ifdef _WIN32
-    return _open(path, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT, _S_IREAD | _S_IWRITE);
-#else
-    return open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-#endif
-}
-
 static bool create_archive(const char *snapshot_path, const char *archive_path)
 {
     FILE *snapshot = fopen(snapshot_path, "rb");
@@ -137,7 +179,7 @@ static bool create_archive(const char *snapshot_path, const char *archive_path)
         return false;
     }
 
-    int fd = open_archive_file(archive_path);
+    int fd = open_private_file(archive_path);
     struct archive *archive = fd >= 0 ? archive_write_new() : NULL;
     bool success = archive && archive_write_set_format_ustar(archive) == ARCHIVE_OK &&
                    archive_write_add_filter_gzip(archive) == ARCHIVE_OK &&
@@ -212,7 +254,8 @@ bool panel_backup_create(const char *backup_dir, const char *auth_db, const char
         !join_path(archive, directory, "archive.tar.gz") || !create_private_directory(backup_dir, directory))
         return false;
 
-    bool success = create_snapshot(auth_db, snapshot) && create_archive(snapshot, archive) &&
+    bool success = panel_backup_snapshot_database(auth_db, snapshot, PANEL_BACKUP_DATABASE_AUTH) &&
+                   create_archive(snapshot, archive) &&
                    publish_archive(archive, final);
     remove_temporary_files(directory);
     return success;

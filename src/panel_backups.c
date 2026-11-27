@@ -67,7 +67,9 @@ static const struct {
     { "data/adminpanel.db", "db" },
     { "data/cidr/cidr.db", "cidr_db" },
     { "env/.env", "env" },
-    { "data/lws-auth.db", "lws_auth" }
+    { "data/lws-auth.db", "lws_auth" },
+    { "awg2/az-awg2-backup.tar.gz", "awg2" },
+    { "antizapret/config/include-hosts.txt", "configs" }
 };
 
 #define COMPONENT_COUNT (sizeof(backup_components) / sizeof(backup_components[0]))
@@ -184,6 +186,66 @@ bool panel_backup_path(char *out, size_t capacity, const char *directory, const 
     return plain_file(info.dwFileAttributes) && !strcmp(info.cFileName, name);
 }
 
+static bool exact_filename(HANDLE file, const char *name)
+{
+    union {
+        FILE_NAME_INFO info;
+        unsigned char data[sizeof(FILE_NAME_INFO) + BACKUP_PATH_SIZE * sizeof(WCHAR)];
+    } file_name;
+    if (!GetFileInformationByHandleEx(file, FileNameInfo, &file_name, sizeof(file_name)) ||
+        file_name.info.FileNameLength % sizeof(WCHAR))
+        return false;
+    size_t length = file_name.info.FileNameLength / sizeof(WCHAR);
+    if (length < BACKUP_NAME_SIZE || length >= BACKUP_PATH_SIZE)
+        return false;
+    const WCHAR *leaf = file_name.info.FileName + length - (BACKUP_NAME_SIZE - 1);
+    if (leaf[-1] != L'\\')
+        return false;
+    for (size_t i = 0; i < BACKUP_NAME_SIZE - 1; ++i)
+        if (leaf[i] != (WCHAR)name[i])
+            return false;
+    return true;
+}
+
+enum panel_backup_delete_result panel_backup_delete(const char *directory, const char *name)
+{
+    char path[BACKUP_PATH_SIZE];
+    if (!directory || !valid_name(name))
+        return PANEL_BACKUP_NOT_FOUND;
+    if (!join_path(path, sizeof(path), directory, name))
+        return PANEL_BACKUP_DELETE_ERROR;
+    HANDLE parent = CreateFileA(directory, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (parent == INVALID_HANDLE_VALUE)
+        return PANEL_BACKUP_DELETE_ERROR;
+
+    enum panel_backup_delete_result result = PANEL_BACKUP_DELETE_ERROR;
+    BY_HANDLE_FILE_INFORMATION metadata;
+    if (GetFileInformationByHandle(parent, &metadata) && plain_directory(metadata.dwFileAttributes)) {
+        HANDLE file = CreateFileA(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                  OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (file == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+                result = PANEL_BACKUP_NOT_FOUND;
+        } else {
+            if (GetFileInformationByHandle(file, &metadata)) {
+                FILE_DISPOSITION_INFO disposition = { .DeleteFile = TRUE };
+                if (GetFileType(file) != FILE_TYPE_DISK || !plain_file(metadata.dwFileAttributes) ||
+                    !exact_filename(file, name)) {
+                    result = PANEL_BACKUP_NOT_FOUND;
+                } else if (SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition))) {
+                    result = PANEL_BACKUP_DELETED;
+                }
+            }
+            if (!CloseHandle(file) && result == PANEL_BACKUP_DELETED)
+                result = PANEL_BACKUP_DELETE_ERROR;
+        }
+    }
+    CloseHandle(parent);
+    return result;
+}
+
 static FILE *open_archive(const char *path, unsigned long long *size)
 {
     HANDLE handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
@@ -252,6 +314,30 @@ bool panel_backup_path(char *out, size_t capacity, const char *directory, const 
     struct stat info;
     return lstat(directory, &info) == 0 && S_ISDIR(info.st_mode) &&
            lstat(out, &info) == 0 && S_ISREG(info.st_mode);
+}
+
+enum panel_backup_delete_result panel_backup_delete(const char *directory, const char *name)
+{
+    if (!directory || !valid_name(name))
+        return PANEL_BACKUP_NOT_FOUND;
+    int fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return PANEL_BACKUP_DELETE_ERROR;
+
+    enum panel_backup_delete_result result = PANEL_BACKUP_DELETE_ERROR;
+    struct stat info;
+    if (fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT)
+            result = PANEL_BACKUP_NOT_FOUND;
+    } else if (!S_ISREG(info.st_mode)) {
+        result = PANEL_BACKUP_NOT_FOUND;
+    } else if (unlinkat(fd, name, 0) == 0) {
+        result = PANEL_BACKUP_DELETED;
+    } else if (errno == ENOENT) {
+        result = PANEL_BACKUP_NOT_FOUND;
+    }
+    close(fd);
+    return result;
 }
 
 static FILE *open_archive(const char *path, unsigned long long *size)
@@ -382,6 +468,14 @@ static unsigned int archive_component(const char *name)
     for (size_t i = 0; i < COMPONENT_COUNT; ++i) {
         if (!strcmp(name, backup_components[i].path))
             return 1u << i;
+    }
+    static const char *const additional_configs[] = {
+        "antizapret/config/exclude-hosts.txt", "antizapret/config/include-ips.txt",
+        "antizapret/config/exclude-ips.txt", "antizapret/config/allow-ips.txt"
+    };
+    for (size_t i = 0; i < sizeof(additional_configs) / sizeof(additional_configs[0]); ++i) {
+        if (!strcmp(name, additional_configs[i]))
+            return 1u << (COMPONENT_COUNT - 1);
     }
     return 0;
 }

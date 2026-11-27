@@ -1,0 +1,14 @@
+[Unit]
+Description=AdminPanelAZ local VPN client socket
+
+[Socket]
+ListenStream=/run/adminpanelaz-lws-client.sock
+SocketUser=root
+SocketGroup=adminpanelaz-lws-client
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=AdminPanelAZ local VPN client operation
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/adminpanelaz-client /root/antizapret/client.sh /run/adminpanelaz-lws-client.lock --socket /etc
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+NoNewPrivileges=yes
+UMask=0077
+RuntimeMaxSec=135
+TimeoutStopSec=5

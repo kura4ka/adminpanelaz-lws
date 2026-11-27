@@ -23,11 +23,6 @@ struct json_writer {
     bool failed;
 };
 
-struct metric {
-    uint64_t value;
-    bool present;
-};
-
 static void append_json(struct json_writer *json, const char *format, ...)
 {
     if (json->failed)
@@ -44,7 +39,7 @@ static void append_json(struct json_writer *json, const char *format, ...)
         json->used += (size_t)length;
 }
 
-static void append_metric(struct json_writer *json, const char *key, struct metric metric)
+static void append_metric(struct json_writer *json, const char *key, struct host_metric metric)
 {
     append_json(json, ",\"%s\":", key);
     if (metric.present)
@@ -88,17 +83,17 @@ static bool read_cpu_times(struct cpu_times *times)
     return true;
 }
 
-static struct metric read_cpu_percent_tenths(void)
+static struct host_metric read_cpu_percent_tenths(void)
 {
     static struct timespec last_attempt;
     static struct cpu_times previous;
-    static struct metric cached;
+    static struct host_metric cached;
     static bool attempted;
     static bool have_previous;
 
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-        return (struct metric){0};
+        return (struct host_metric){0};
 
     if (attempted) {
         time_t seconds = now.tv_sec - last_attempt.tv_sec;
@@ -107,7 +102,7 @@ static struct metric read_cpu_percent_tenths(void)
     }
     last_attempt = now;
     attempted = true;
-    cached = (struct metric){0};
+    cached = (struct host_metric){0};
 
     struct cpu_times current;
     if (!read_cpu_times(&current))
@@ -118,7 +113,7 @@ static struct metric read_cpu_percent_tenths(void)
         uint64_t idle = current.idle - previous.idle;
         if (idle <= total) {
             long double busy = (long double)(total - idle) / total;
-            cached = (struct metric){ (uint64_t)(busy * 1000 + 0.5L), true };
+            cached = (struct host_metric){ (uint64_t)(busy * 1000 + 0.5L), true };
         }
     }
     previous = current;
@@ -126,30 +121,30 @@ static struct metric read_cpu_percent_tenths(void)
     return cached;
 }
 
-static void read_memory(struct metric *total, struct metric *used)
+static void read_memory(struct host_metric *total, struct host_metric *used)
 {
     FILE *file = fopen("/proc/meminfo", "r");
     if (!file)
         return;
 
-    struct metric available = {0};
+    struct host_metric available = {0};
     char line[256];
     while (fgets(line, sizeof(line), file)) {
         uint64_t kb;
         if (sscanf(line, "MemTotal: %" SCNu64, &kb) == 1 && kb <= UINT64_MAX / 1024)
-            *total = (struct metric){ kb * 1024, true };
+            *total = (struct host_metric){ kb * 1024, true };
         else if (sscanf(line, "MemAvailable: %" SCNu64, &kb) == 1 && kb <= UINT64_MAX / 1024)
-            available = (struct metric){ kb * 1024, true };
+            available = (struct host_metric){ kb * 1024, true };
         if (total->present && available.present)
             break;
     }
     fclose(file);
 
     if (total->present && available.present && available.value <= total->value)
-        *used = (struct metric){ total->value - available.value, true };
+        *used = (struct host_metric){ total->value - available.value, true };
 }
 
-static void read_disk(const char *path, struct metric *total, struct metric *used)
+static void read_disk(const char *path, struct host_metric *total, struct host_metric *used)
 {
     struct statvfs fs;
     if (!path || statvfs(path, &fs) != 0)
@@ -159,14 +154,14 @@ static void read_disk(const char *path, struct metric *total, struct metric *use
     if (!block_size || fs.f_blocks > UINT64_MAX / block_size)
         return;
 
-    *total = (struct metric){ fs.f_blocks * block_size, true };
+    *total = (struct host_metric){ fs.f_blocks * block_size, true };
     if (fs.f_bfree <= fs.f_blocks)
-        *used = (struct metric){ (fs.f_blocks - fs.f_bfree) * block_size, true };
+        *used = (struct host_metric){ (fs.f_blocks - fs.f_bfree) * block_size, true };
 }
 
-static struct metric read_uptime(void)
+static struct host_metric read_uptime(void)
 {
-    struct metric uptime = {0};
+    struct host_metric uptime = {0};
     FILE *file = fopen("/proc/uptime", "r");
     if (file) {
         uptime.present = fscanf(file, "%" SCNu64, &uptime.value) == 1;
@@ -175,9 +170,9 @@ static struct metric read_uptime(void)
     return uptime;
 }
 
-static struct metric read_tcp_established(void)
+static struct host_metric read_tcp_established(void)
 {
-    struct metric result = {0};
+    struct host_metric result = {0};
     FILE *file = fopen("/proc/net/snmp", "r");
     if (!file)
         return result;
@@ -202,7 +197,7 @@ static struct metric read_tcp_established(void)
                 uintmax_t count = strtoumax(value, &end, 10);
                 if (value[0] >= '0' && value[0] <= '9' && *end == '\0' &&
                     errno != ERANGE && count <= UINT64_MAX)
-                    result = (struct metric){ (uint64_t)count, true };
+                    result = (struct host_metric){ (uint64_t)count, true };
                 break;
             }
             key = strtok_r(NULL, space, &header_state);
@@ -252,38 +247,43 @@ static void append_interfaces(struct json_writer *json)
 }
 #endif
 
+void host_metrics_resources(const char *data_path, struct host_resources *out)
+{
+    *out = (struct host_resources){0};
+#ifdef __linux__
+    out->cpu_tenths = read_cpu_percent_tenths();
+    read_memory(&out->memory_total, &out->memory_used);
+    read_disk(data_path, &out->disk_total, &out->disk_used);
+#else
+    (void)data_path;
+#endif
+}
+
 size_t host_metrics_json(char *out, size_t capacity, const char *data_path)
 {
     if (!out || !capacity)
         return 0;
 
     struct json_writer json = { .out = out, .capacity = capacity };
-    struct metric cpu = {0};
-    struct metric memory_total = {0};
-    struct metric memory_used = {0};
-    struct metric disk_total = {0};
-    struct metric disk_used = {0};
-    struct metric uptime = {0};
-    struct metric tcp_established = {0};
+    struct host_resources resources;
+    struct host_metric uptime = {0};
+    struct host_metric tcp_established = {0};
+    host_metrics_resources(data_path, &resources);
 
 #ifdef __linux__
-    cpu = read_cpu_percent_tenths();
-    read_memory(&memory_total, &memory_used);
-    read_disk(data_path, &disk_total, &disk_used);
     uptime = read_uptime();
     tcp_established = read_tcp_established();
-#else
-    (void)data_path;
 #endif
 
-    if (cpu.present)
-        append_json(&json, "{\"cpu_percent\":%" PRIu64 ".%" PRIu64, cpu.value / 10, cpu.value % 10);
+    if (resources.cpu_tenths.present)
+        append_json(&json, "{\"cpu_percent\":%" PRIu64 ".%" PRIu64,
+                    resources.cpu_tenths.value / 10, resources.cpu_tenths.value % 10);
     else
         append_json(&json, "{\"cpu_percent\":null");
-    append_metric(&json, "memory_total_bytes", memory_total);
-    append_metric(&json, "memory_used_bytes", memory_used);
-    append_metric(&json, "disk_total_bytes", disk_total);
-    append_metric(&json, "disk_used_bytes", disk_used);
+    append_metric(&json, "memory_total_bytes", resources.memory_total);
+    append_metric(&json, "memory_used_bytes", resources.memory_used);
+    append_metric(&json, "disk_total_bytes", resources.disk_total);
+    append_metric(&json, "disk_used_bytes", resources.disk_used);
     append_metric(&json, "uptime_seconds", uptime);
     append_metric(&json, "tcp_established", tcp_established);
     append_json(&json, ",\"interfaces\":[");

@@ -63,6 +63,7 @@ struct client_columns {
     size_t received;
     size_t sent;
     size_t since;
+    size_t since_numeric;
 };
 
 struct client_list {
@@ -161,7 +162,8 @@ static bool map_columns(struct client_columns *columns, char *const fields[], si
         .virtual_ipv6 = find_column(fields, count, "Virtual IPv6 Address"),
         .received = find_column(fields, count, "Bytes Received"),
         .sent = find_column(fields, count, "Bytes Sent"),
-        .since = find_column(fields, count, "Connected Since")
+        .since = find_column(fields, count, "Connected Since"),
+        .since_numeric = find_column(fields, count, "Connected Since (time_t)")
     };
     return columns->name < count && columns->remote < count &&
            columns->received < count && columns->sent < count && columns->since < count;
@@ -286,7 +288,25 @@ static void append_client(struct json_buffer *out, struct client_list *clients,
     ++clients->shown;
 }
 
-static bool read_snapshot(FILE *file, struct json_buffer *out, struct client_list *clients)
+static bool visit_counter(vpn_counter_fn read_counter, void *context,
+                          const struct client_columns *columns, char *const fields[], size_t count)
+{
+    const char *virtual_ip = field_value(fields, count, columns->virtual_ipv4);
+    const char *since = field_value(fields, count, columns->since_numeric);
+    struct vpn_counter counter = {
+        .name = field_value(fields, count, columns->name),
+        .remote = field_value(fields, count, columns->remote),
+        .virtual_ip = virtual_ip ? virtual_ip : field_value(fields, count, columns->virtual_ipv6),
+        .since = since ? since : field_value(fields, count, columns->since),
+        .rx = field_value(fields, count, columns->received),
+        .tx = field_value(fields, count, columns->sent),
+        .connected = true
+    };
+    return read_counter(&counter, context);
+}
+
+static bool read_snapshot(FILE *file, struct json_buffer *out, struct client_list *clients,
+                          vpn_counter_fn read_counter, void *context)
 {
     struct status_reader reader = { .file = file, .remaining = MAX_STATUS_BYTES };
     struct client_columns columns;
@@ -300,6 +320,8 @@ static bool read_snapshot(FILE *file, struct json_buffer *out, struct client_lis
     for (;;) {
         enum line_result result = read_line(&reader, line);
         if (result == LINE_END)
+            return false;
+        if (result == LINE_INVALID && read_counter)
             return false;
         if (result == LINE_VALID && !strcmp(line, "END"))
             return valid_header;
@@ -332,9 +354,14 @@ static bool read_snapshot(FILE *file, struct json_buffer *out, struct client_lis
             continue;
 
         ++clients->total;
-        if (result == LINE_VALID && !clients->full && clients->shown < MAX_CLIENTS) {
+        if (result == LINE_VALID && (read_counter || (!clients->full && clients->shown < MAX_CLIENTS))) {
             size_t count = split_fields(version_one ? line : line + 12, delimiter, fields);
-            append_client(out, clients, &columns, fields, count);
+            if (read_counter) {
+                if (!visit_counter(read_counter, context, &columns, fields, count))
+                    return false;
+            } else {
+                append_client(out, clients, &columns, fields, count);
+            }
         }
     }
 }
@@ -358,7 +385,7 @@ size_t vpn_statuses_json(char *out, size_t capacity, const char *const *paths, s
             continue;
         struct json_buffer previous_json = json;
         struct client_list previous_clients = clients;
-        if (read_snapshot(file, &json, &clients)) {
+        if (read_snapshot(file, &json, &clients, NULL, NULL)) {
             available = true;
         } else {
             json = previous_json;
@@ -383,4 +410,17 @@ size_t vpn_statuses_json(char *out, size_t capacity, const char *const *paths, s
         json.used = 0;
     out[json.used] = '\0';
     return json.used;
+}
+
+bool vpn_status_counters(const char *path, vpn_counter_fn read_counter, void *context)
+{
+    if (!path || !read_counter)
+        return false;
+    FILE *file = open_status_file(path);
+    if (!file)
+        return false;
+    struct client_list clients = {0};
+    bool complete = read_snapshot(file, NULL, &clients, read_counter, context);
+    fclose(file);
+    return complete;
 }

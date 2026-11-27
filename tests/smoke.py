@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import ssl
 import struct
 import subprocess
@@ -349,14 +350,81 @@ def check_admin(command, data, log, tls):
         status, body = client.request("GET", f"/api/backups/{name}/inspect", headers=cookie)
         require(status == 200 and "lws_auth" in json_object(body, "Native inspection")["components"],
                 "Native backup component not recognized")
+        migration = Path(command[0]).with_name("adminpanelaz-migration" + Path(command[0]).suffix)
+        staged = data / "staged.db"
+        subprocess.run([migration, "stage-native-auth", data / "backups" / name, staged], check=True)
+        with closing(sqlite3.connect(staged)) as snapshot:
+            require(snapshot.execute("SELECT username FROM panel_accounts").fetchall() == [("admin",)],
+                    "Native staging did not preserve the account")
+            require(snapshot.execute("SELECT COUNT(*) FROM panel_sessions").fetchone() == (0,),
+                    "Native staging retained sessions")
+        archive = f"/api/backups/{name}"
+        require(client.request("DELETE", archive, headers=AUTH)[0] == 401,
+                "Legacy monitor token could delete a backup")
+        require(client.request("DELETE", archive, headers={**cookie, "Origin": "https://example.invalid"})[0] == 403,
+                "Accepted a cross-origin backup deletion")
+        require((data / "backups" / name).is_file(), "A rejected delete removed the archive")
+        require(client.request("DELETE", archive, headers=cookie)[0] == 200, "Backup deletion failed")
+        require(client.request("DELETE", archive, headers=cookie)[0] == 404,
+                "Deleting an already deleted archive did not return 404")
+        require(client.request("GET", archive + "/download", headers=cookie)[0] == 404 and
+                not (data / "backups" / name).exists(), "Deleted archive remains available")
         new_password = "Смена пароля 1 + & % !"
         status, cleared, _ = post("/api/auth/change-password", {"old_password": TOKEN, "new_password": new_password}, cookie)
         require(status == 200 and cleared and "Max-Age=0" in cleared, f"Password change returned {status}")
         require(client.request("GET", "/api/auth/me", headers=cookie)[0] == 401 and
                 client.request("GET", "/api/auth/me", headers=second_session)[0] == 401, "Old sessions still work")
         cookie = login(new_password)
-        require(client.request("POST", "/api/auth/logout", headers=cookie)[0] == 200, "Logout failed")
+        with closing(client.connection()) as conn:
+            conn.request("GET", "/api/monitor/events", headers=cookie)
+            with conn.getresponse() as stream:
+                require(stream.status == 200, "Cookie-authorized SSE failed")
+                read_event_sample(stream)
+                require(client.request("POST", "/api/auth/logout", headers=cookie)[0] == 200, "Logout failed")
+                try:
+                    packet = stream.readline(MAX_TEST_RESPONSE)
+                except (ConnectionAbortedError, ConnectionResetError):
+                    packet = b""
+                require(not packet, "Logged-out session still receives SSE")
         require(client.request("GET", "/api/auth/me", headers=cookie)[0] == 401, "Revoked session still works")
+
+
+def check_access_path(command, data, log, tls):
+    port = choose_port()
+    client = PanelClient(port, tls=tls)
+    prefix = "/a/noc"
+    origin = "https://panel.example.test"
+    command = [command[0], "--port", str(port), "--data-dir", str(data), "--access-path", prefix,
+               "--public-origin", origin,
+               "--auth-db", str(data / "prefixed.db"), *command[9:]]
+    with run_panel(command, log) as process:
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                status, _ = client.request("GET", prefix + "/api/health")
+                require(status == 200, f"Prefixed health returned {status}")
+                break
+            except (OSError, http.client.HTTPException):
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+        for path in (prefix, prefix + "/", prefix + "/monitoring?tab=resources", prefix + "/settings/backups", prefix + "/nodes"):
+            status, shell = client.request("GET", path)
+            require(status == 200 and b'name="apaz-base" content="/a/noc"' in shell,
+                    f"Embedded prefixed route did not load: {path}, status {status}")
+            require(b'<base href="/a/noc/">' in shell, f"Embedded asset prefix missing at {path}")
+        require(client.request("GET", prefix + "/assets/panel.js")[0] == 200,
+                "Embedded JavaScript did not load below the panel prefix")
+        for path in ("/", "/api/health", prefix + "wrong/api/health"):
+            require(client.request("GET", path)[0] == 404, f"Route unexpectedly exposed: {path}")
+        with closing(client.connection()) as conn:
+            conn.request("POST", prefix + "/api/auth/login", urlencode({"username": "admin", "password": TOKEN}),
+                         {"Content-Type": "application/x-www-form-urlencoded",
+                          "Host": "panel.example.test", "Origin": origin})
+            with conn.getresponse() as response:
+                cookie = response.getheader("Set-Cookie", "")
+                require(response.status == 200 and f"Path={prefix};" in cookie and "; Secure" in cookie,
+                        "Session cookie did not use configured HTTPS origin and URL prefix")
 
 
 def choose_port():
@@ -432,6 +500,7 @@ def main():
                 check_health(client)
             check_bundled_dashboard(command, data, log, tls=args.tls_cert is not None)
             check_admin(command, data, log, tls=args.tls_cert is not None)
+            check_access_path(command, data, log, tls=args.tls_cert is not None)
         except (AssertionError, OSError, ValueError, http.client.HTTPException) as error:
             print(f"Smoke test failed: {error}", file=sys.stderr)
             if log.is_file():

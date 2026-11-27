@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Подключение</title>
+  <style>
+    :root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; color: #f1f5f9; background: #070b14; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(ellipse at 10% 6%, #103047, transparent 32%), radial-gradient(ellipse at 95% 100%, #112846, transparent 34%); }
+    main { max-width: 850px; margin: auto; padding: 38px 20px 64px; }
+    header { display: flex; gap: 14px; align-items: center; margin-bottom: 24px; }
+    .brand { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 16px; border: 1px solid #235967; color: #67e8f9; background: #0e3748; font-size: 23px; flex-shrink: 0; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 25px; line-height: 1.2; }
+    h2 { font-size: 17px; margin-bottom: 8px; }
+    .muted, small { color: #a3b4c9; }
+    .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 13px; }
+    article, section, .message { background: #ffffff08; border: 1px solid #ffffff1a; padding: 15px; border-radius: 18px; overflow-wrap: anywhere; }
+    article p { margin-top: 5px; }
+    section, .message { border-radius: 22px; margin-bottom: 13px; }
+    .active { color: #86efac; }
+    .blocked, .expired { color: #fda4af; }
+    .message { border-color: #a45e34; color: #fed7aa; }
+    .options, .actions { display: flex; flex-wrap: wrap; gap: 7px; margin: 7px 0; }
+    button, a.action { font: inherit; color: inherit; border: 1px solid #ffffff25; background: #ffffff05; padding: 6px 12px; border-radius: 9px; cursor: pointer; text-decoration: none; }
+    [aria-pressed="true"], a.primary { background: #164458; border-color: #368295; color: #a5f3fc; }
+    button:hover, a.action:hover { border-color: #67e8f9; }
+    .file { border: 1px solid #ffffff1a; background: #0003; padding: 11px 13px; border-radius: 12px; margin-top: 9px; }
+    @media (max-width: 610px) { main { padding: 25px 13px 50px; } .cards { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <main>
+    <header><span class="brand" aria-hidden="true">↗</span><div><h1>Подключение</h1><p class="muted">Клиентский портал</p></div></header>
+    <div id="portal" aria-live="polite"><p class="muted">Загрузка…</p></div>
+  </main>
+  <script>
+    'use strict';
+    const portal = document.querySelector('#portal');
+    const names = {openvpn: 'OpenVPN', wireguard: 'WireGuard', amneziawg: 'AmneziaWG 1.5', amneziawg2: 'AmneziaWG 2.0'};
+    const devices = {windows: 'Windows', mac: 'macOS', android: 'Android', ios: 'iOS', linux: 'Linux'};
+    const installs = {
+      openvpn: {windows: 'https://openvpn.net/client/', mac: 'https://openvpn.net/client/', linux: 'https://openvpn.net/community-downloads/', android: 'https://play.google.com/store/apps/details?id=net.openvpn.openvpn', ios: 'https://apps.apple.com/app/openvpn-connect/id590379981'},
+      wireguard: {windows: 'https://www.wireguard.com/install/', mac: 'https://apps.apple.com/app/wireguard/id1451685025', linux: 'https://www.wireguard.com/install/', android: 'https://play.google.com/store/apps/details?id=com.wireguard.android', ios: 'https://apps.apple.com/app/wireguard/id1441195209'},
+      amneziawg: {windows: 'https://github.com/amnezia-vpn/amneziawg-windows-client/releases', mac: 'https://amnezia.org/en/downloads', linux: 'https://amnezia.org/en/downloads', android: 'https://amnezia.org/en/downloads', ios: 'https://apps.apple.com/app/amneziawg/id6478942365'},
+      amneziawg2: {windows: 'https://amnezia.org/en/downloads', mac: 'https://amnezia.org/en/downloads', linux: 'https://amnezia.org/en/downloads', android: 'https://amnezia.org/en/downloads', ios: 'https://amnezia.org/en/downloads'}
+    };
+    let data, nodeIndex = 0, clientIndex = 0, protocol, device = preferredDevice();
+
+    function preferredDevice() {
+      const agent = navigator.userAgent;
+      if (/Android/.test(agent)) return 'android';
+      if (/iPhone|iPad/.test(agent)) return 'ios';
+      if (/Mac/.test(agent)) return 'mac';
+      if (/Linux/.test(agent)) return 'linux';
+      return 'windows';
+    }
+
+    function add(parent, tag, text = '', className = '') {
+      const element = document.createElement(tag);
+      element.className = className;
+      element.textContent = text;
+      parent.append(element);
+      return element;
+    }
+
+    function actions(parent, choices, selected, update) {
+      const group = add(parent, 'div', '', 'options');
+      for (const [value, label] of choices) {
+        const button = add(group, 'button', label);
+        button.type = 'button';
+        button.setAttribute('aria-pressed', String(value === selected));
+        button.addEventListener('click', () => {
+          update(value);
+          render();
+        });
+      }
+    }
+
+    function action(parent, label, href, primary = false) {
+      const link = add(parent, 'a', label, primary ? 'action primary' : 'action');
+      link.href = href;
+      link.rel = 'noreferrer';
+    }
+
+    function showInfo(parent, entry) {
+      const status = entry.status || {};
+      const cards = add(parent, 'div', '', 'cards');
+      for (const [label, value, tone] of [
+        ['Профиль', entry.client_name], ['Статус', status.status_label, status.status],
+        ['Доступ до', status.expires_label], ['Трафик', status.traffic_label]
+      ]) {
+        const item = add(cards, 'article');
+        add(item, 'small', label);
+        add(item, 'p', value || '—', tone);
+      }
+    }
+
+    function chooseTarget(parent) {
+      if (data.kind !== 'user') return data;
+      const messages = {suspended: 'Доступ приостановлен', traffic_limit: 'Лимит трафика исчерпан', expired: 'Срок доступа истёк', expiring: 'Срок доступа скоро истечёт'};
+      const access = data.closed_access;
+      if (access) add(parent, 'p', access.reason ? `${messages[access.state]} · ${access.reason}` : messages[access.state], 'message');
+      if (data.portal_banner?.text) add(parent, 'p', data.portal_banner.text, 'message');
+      const nodes = data.nodes;
+      const node = nodes[nodeIndex];
+      if (!node) return null;
+      if (nodes.length > 1) {
+        const section = add(parent, 'section');
+        add(section, 'h2', 'Сервер');
+        actions(section, nodes.map((item, index) => [index, item.label]), nodeIndex, index => {
+          nodeIndex = index;
+          clientIndex = 0;
+          protocol = undefined;
+        });
+      }
+      if (node.clients.length > 1) {
+        const section = add(parent, 'section');
+        add(section, 'h2', 'Профиль');
+        actions(section, node.clients.map((item, index) => [index, item.client_name]), clientIndex, index => {
+          clientIndex = index;
+          protocol = undefined;
+        });
+      }
+      return node.clients[clientIndex];
+    }
+
+    function downloadPath(url) {
+      const address = new URL(url, location.origin);
+      if (!address.pathname.startsWith('/api/public/portal/')) throw new Error('Некорректный адрес файла');
+      return address.pathname + address.search;
+    }
+
+    function showConnection(parent, entry) {
+      const section = add(parent, 'section');
+      add(section, 'h2', 'Подключение');
+      if (!entry?.files.length) {
+        add(section, 'p', 'Доступных файлов конфигурации пока нет.', 'muted');
+        return;
+      }
+      if (!entry.protocols.includes(protocol)) protocol = entry.protocols[0];
+      actions(section, entry.protocols.map(key => [key, names[key] || key]), protocol, key => { protocol = key; });
+      actions(section, Object.entries(devices), device, key => { device = key; });
+      const install = data.app_links?.[protocol]?.[device] || installs[protocol]?.[device];
+      if (install && /^https?:\/\//.test(install)) action(add(section, 'div', '', 'actions'), `Скачать ${names[protocol]}`, install, true);
+      for (const file of entry.files.filter(file => file.vpn_type === protocol)) {
+        const box = add(section, 'div', '', 'file');
+        add(box, 'strong', file.filename);
+        const links = add(box, 'div', '', 'actions');
+        const path = downloadPath(file.download_url);
+        if (protocol === 'openvpn' && location.protocol === 'https:') {
+          action(links, 'Открыть в OpenVPN', `openvpn://import-profile/${location.origin}${path}`, true);
+        }
+        action(links, 'Скачать', path);
+      }
+    }
+
+    function render() {
+      portal.replaceChildren();
+      const entry = chooseTarget(portal);
+      if (entry) showInfo(portal, entry);
+      showConnection(portal, entry);
+    }
+
+    async function load() {
+      const route = /^\/p\/([A-Za-z0-9_-]{1,64})\/?$/.exec(location.pathname);
+      if (!route) throw new Error('Ссылка недействительна');
+      const response = await fetch(`/api/public/portal/${route[1]}`, {cache: 'no-store', credentials: 'omit'});
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || (response.status === 404 ? 'Ссылка недействительна' : 'Не удалось загрузить страницу'));
+      }
+      data = await response.json();
+      document.title = data.brand_title;
+      document.querySelector('h1').textContent = data.brand_title;
+      render();
+    }
+
+    load().catch(error => {
+      portal.replaceChildren();
+      add(portal, 'p', error.message, 'message');
+    });
+  </script>
+</body>
+</html>

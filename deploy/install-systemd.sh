@@ -3,6 +3,13 @@ set -eu
 
 domain=${1:?usage: sudo sh deploy/install-systemd.sh domain [build-dir]}
 build=${2:-build}
+snapshot_lists=${APAZ_SNAPSHOT_VPN_LISTS:-0}
+config_option=
+case "$snapshot_lists" in
+    0) ;;
+    1) config_option='--config-dir /run/adminpanelaz-lws-vpn/configs' ;;
+    *) echo 'APAZ_SNAPSHOT_VPN_LISTS must be 0 or 1.' >&2; exit 2 ;;
+esac
 case "$domain" in *[!A-Za-z0-9.-]*|.*|-*|*.) echo 'Invalid certificate domain' >&2; exit 2 ;; esac
 if [ "$(id -u)" -ne 0 ]; then
     echo 'Run as root.' >&2
@@ -29,7 +36,7 @@ mv -f /usr/local/bin/adminpanelaz-lws.next /usr/local/bin/adminpanelaz-lws
 install -m 0755 "$build/adminpanelaz-openvpn-snapshot" /usr/local/libexec/adminpanelaz-openvpn-snapshot
 install -m 0755 "$(dirname "$0")/vpn-snapshot.sh" /usr/local/libexec/adminpanelaz-lws-vpn-snapshot
 
-cat > /etc/systemd/system/adminpanelaz-lws-vpn.service <<'UNIT'
+cat > /etc/systemd/system/adminpanelaz-lws-vpn.service <<UNIT
 [Unit]
 Description=AdminPanelAZ LWS VPN status snapshot
 
@@ -40,6 +47,7 @@ RuntimeDirectory=adminpanelaz-lws-vpn
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 TimeoutStartSec=20
+Environment=APAZ_SNAPSHOT_VPN_LISTS=$snapshot_lists
 ExecStart=/usr/local/libexec/adminpanelaz-lws-vpn-snapshot /run/adminpanelaz-lws-vpn
 UNIT
 
@@ -79,7 +87,7 @@ ExecStart=/usr/local/bin/adminpanelaz-lws --bind 0.0.0.0 --port 443 --data-dir /
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-antizapret-tcp.status \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-vpn-udp.status \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-vpn-tcp.status \\
-  --wireguard-status /run/adminpanelaz-lws-vpn/wireguard.status
+  --wireguard-status /run/adminpanelaz-lws-vpn/wireguard.status $config_option
 Restart=on-failure
 RestartSec=2s
 
