@@ -44,4 +44,10 @@ curl -N -H "Authorization: Bearer $APAZ_AUTH_TOKEN" http://127.0.0.1:8000/api/mo
 python3 tests/smoke.py ./build/adminpanelaz-lws
 ```
 
-Для HTTPS используйте те же тесты с `--tls-cert` и `--tls-key` и отдельной парой для стенда. Тесты проверяют раздачу SPA, авторизацию, потоки и приём файла. Бюджет 20 МиБ оценивается отдельно в Linux по `MemoryPeak` сервиса при нескольких открытых потоках и большой загрузке.
+Для HTTPS используйте те же тесты с `--tls-cert` и `--tls-key` и отдельной парой для стенда. Тесты проверяют раздачу SPA, авторизацию, потоки и приём файла.
+
+На тестовом Linux с systemd и cgroup v2 этот сценарий запускает прототип в отдельном сервисе с `MemoryMax=20M` и `MemorySwapMax=0`. Он открывает три SSE и два WebSocket-подключения, загружает 48 МиБ по HTTPS и выводит пик памяти сервиса и счётчики OOM.
+
+```sh
+python3 tests/memory_budget.py ./build/adminpanelaz-lws /path/to/test.crt /path/to/test.key
+```

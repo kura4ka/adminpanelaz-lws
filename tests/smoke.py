@@ -123,22 +123,25 @@ def check_events(client):
             require(response.status == 200, f"SSE returned {response.status}")
             content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip()
             require(content_type == "text/event-stream", f"Incorrect SSE content type {content_type!r}")
+            read_event_sample(response)
+
+
+def read_event_sample(response):
+    event = b""
+    data = []
+    for _ in range(32):
+        line = response.readline(MAX_TEST_RESPONSE)
+        require(line and line.endswith(b"\n"), "SSE closed or emitted an overlong line")
+        line = line.rstrip(b"\r\n")
+        if not line:
+            if data:
+                require(event == b"sample", f"Incorrect SSE event {event!r}")
+                return json_object(b"\n".join(data), "SSE sample")
             event = b""
-            data = []
-            for _ in range(32):
-                line = response.readline(MAX_TEST_RESPONSE)
-                require(line and line.endswith(b"\n"), "SSE closed or emitted an overlong line")
-                line = line.rstrip(b"\r\n")
-                if not line:
-                    if data:
-                        require(event == b"sample", f"Incorrect SSE event {event!r}")
-                        json_object(b"\n".join(data), "SSE sample")
-                        return
-                    event = b""
-                elif line.startswith(b"event:"):
-                    event = line[6:].lstrip(b" ")
-                elif line.startswith(b"data:"):
-                    data.append(line[5:].removeprefix(b" "))
+        elif line.startswith(b"event:"):
+            event = line[6:].lstrip(b" ")
+        elif line.startswith(b"data:"):
+            data.append(line[5:].removeprefix(b" "))
     raise AssertionError("No SSE sample received")
 
 

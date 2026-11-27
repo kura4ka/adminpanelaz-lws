@@ -22,7 +22,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential ca-certificates cmake git libwebsockets-dev openssl python3
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Compile
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -34,3 +34,19 @@ jobs:
             -keyout "$RUNNER_TEMP/test.key" -out "$RUNNER_TEMP/test.crt"
           python3 tests/smoke.py ./build/adminpanelaz-lws \
             --tls-cert "$RUNNER_TEMP/test.crt" --tls-key "$RUNNER_TEMP/test.key"
+
+  memory-budget:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build release binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebsockets-dev
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+      - name: Check 20 MiB cgroup limit over HTTPS
+        run: |
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj /CN=localhost \
+            -keyout "$RUNNER_TEMP/test.key" -out "$RUNNER_TEMP/test.crt"
+          python3 tests/memory_budget.py ./build/adminpanelaz-lws "$RUNNER_TEMP/test.crt" "$RUNNER_TEMP/test.key"
