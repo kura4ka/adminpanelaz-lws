@@ -10,6 +10,7 @@
 #include <sqlite3.h>
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -255,8 +256,12 @@ bool panel_auth_open(const char *path, const char *initial_password)
         " expires_at INTEGER NOT NULL"
         ") WITHOUT ROWID;"
         "CREATE INDEX IF NOT EXISTS panel_sessions_expiry ON panel_sessions(expires_at);";
-    if (database || !path || !path[0] || !prepare_file(path))
+    if (database || !path || !path[0])
         return false;
+    if (!prepare_file(path)) {
+        fputs("Cannot create the authentication database file.\n", stderr);
+        return false;
+    }
     int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
 #ifdef SQLITE_OPEN_NOFOLLOW
     flags |= SQLITE_OPEN_NOFOLLOW;
@@ -265,10 +270,12 @@ bool panel_auth_open(const char *path, const char *initial_password)
     if (sqlite3_open_v2(path, &database, flags, NULL) != SQLITE_OK ||
         sqlite3_busy_timeout(database, 250) != SQLITE_OK ||
         !execute("PRAGMA foreign_keys = ON") || !current_time(&now) || !execute("BEGIN IMMEDIATE")) {
+        fprintf(stderr, "Cannot initialize SQLite authentication: %s\n", sqlite3_errmsg(database));
         panel_auth_close();
         return false;
     }
     if (!execute(schema) || !bootstrap_admin(initial_password) || !prune_expired(now) || !execute("COMMIT")) {
+        fprintf(stderr, "Cannot initialize authentication schema: %s\n", sqlite3_errmsg(database));
         execute("ROLLBACK");
         panel_auth_close();
         return false;

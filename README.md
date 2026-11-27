@@ -10,7 +10,7 @@ GitHub Actions отдельно собирает и проверяет прот�
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y git build-essential cmake libwebsockets-dev libssl-dev libsqlite3-dev libarchive-dev zlib1g-dev openssl
+sudo apt-get install -y git build-essential cmake libwebsockets-dev libssl-dev libsqlite3-dev libarchive-dev zlib1g-dev openssl curl
 git clone https://github.com/kura4ka/adminpanelaz-lws.git &&
 cd adminpanelaz-lws &&
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release &&

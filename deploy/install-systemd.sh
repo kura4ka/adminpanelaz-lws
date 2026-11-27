@@ -74,13 +74,14 @@ BindReadOnlyPaths=-/root/antizapret/client:/run/adminpanelaz-lws-profiles
 LoadCredential=fullchain.pem:$cert/fullchain.pem
 LoadCredential=privkey.pem:$cert/privkey.pem
 ExecStart=/usr/local/bin/adminpanelaz-lws --bind 0.0.0.0 --port 443 --data-dir /var/lib/adminpanelaz-lws --tls-cert %d/fullchain.pem --tls-key %d/privkey.pem \\
-  --auth-db /var/lib/adminpanelaz-lws/auth.db --profiles-dir /run/adminpanelaz-lws-profiles \\
+  --auth-db /var/lib/private/adminpanelaz-lws/auth.db --profiles-dir /run/adminpanelaz-lws-profiles \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-antizapret-udp.status \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-antizapret-tcp.status \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-vpn-udp.status \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-vpn-tcp.status \\
   --wireguard-status /run/adminpanelaz-lws-vpn/wireguard.status
 Restart=on-failure
+RestartSec=2s
 
 [Install]
 WantedBy=multi-user.target
@@ -99,4 +100,13 @@ systemctl daemon-reload
 systemctl enable --now adminpanelaz-lws-vpn.timer
 systemctl start adminpanelaz-lws-vpn.service
 systemctl enable adminpanelaz-lws.service
+systemctl reset-failed adminpanelaz-lws.service
 systemctl restart adminpanelaz-lws.service
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if curl --fail --silent --max-time 2 --resolve "$domain:443:127.0.0.1" "https://$domain/api/health" >/dev/null; then
+        exit 0
+    fi
+    sleep 1
+done
+systemctl --no-pager --lines=8 status adminpanelaz-lws.service >&2 || :
+exit 1
