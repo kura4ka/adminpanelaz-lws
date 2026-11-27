@@ -54,6 +54,9 @@ struct upload {
     char id[33];
     unsigned long long length;
     unsigned long long received;
+#ifdef __linux__
+    unsigned long long flushed;
+#endif
 };
 
 struct session {
@@ -227,6 +230,20 @@ static int receive_upload(struct lws *wsi, struct session *session, const void *
         return error_reply(wsi, session, 500, "backup_write_failed");
     }
     upload->received += len;
+#ifdef __linux__
+    // Bound dirty file-cache pages charged to the service's cgroup.
+    const unsigned long long batch_size = 1024 * 1024;
+    unsigned long long boundary = upload->received - upload->received % batch_size;
+    if (boundary > upload->flushed) {
+        int fd = fileno(upload->file);
+        if (fflush(upload->file) != 0 || fdatasync(fd) != 0) {
+            discard_upload(session);
+            return error_reply(wsi, session, 500, "backup_write_failed");
+        }
+        (void)posix_fadvise(fd, (off_t)upload->flushed, (off_t)(boundary - upload->flushed), POSIX_FADV_DONTNEED);
+        upload->flushed = boundary;
+    }
+#endif
     return 0;
 }
 

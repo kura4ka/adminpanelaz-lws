@@ -45,6 +45,8 @@ def upload(client, data):
 
 
 def exercise(client, data):
+    status, _ = client.request("GET", "/")
+    smoke.require(status == 200, f"SPA returned {status}")
     with ExitStack() as stack:
         events = []
         for _ in range(3):
@@ -111,6 +113,7 @@ def main():
             limit = LIMIT_MIB * 1024 * 1024
             smoke.require((group / "memory.max").read_text().strip() == str(limit), "Cgroup memory cap was not applied")
             smoke.require((group / "memory.swap.max").read_text().strip() == "0", "Cgroup swap cap was not applied")
+            print(f"Initial memory.current: {(group / 'memory.current').read_text().strip()} bytes", flush=True)
             exercise(client, data)
             peak = int((group / "memory.peak").read_text())
             events = dict(line.split() for line in (group / "memory.events").read_text().splitlines())
