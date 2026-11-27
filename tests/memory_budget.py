@@ -47,6 +47,7 @@ def upload(client, data):
 def exercise(client, data):
     status, _ = client.request("GET", "/")
     smoke.require(status == 200, f"SPA returned {status}")
+    smoke.check_monitor(client)
     with ExitStack() as stack:
         events = []
         for _ in range(3):

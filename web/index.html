@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Мониторинг · AdminPanelAZ</title>
+  <style>
+    :root {
+      font-family: Inter, system-ui, "Segoe UI", sans-serif;
+      color: hsl(210 20% 96%);
+      background: hsl(222 47% 7%);
+      color-scheme: dark;
+      --panel: hsl(222 47% 10%);
+      --border: hsl(217 33% 18%);
+      --muted: hsl(215 16% 65%);
+      --accent: hsl(187 72% 55%);
+      --warning: #ffd08a;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; min-width: 0; }
+    main, .head-inner { width: min(100% - 48px, 1180px); margin-inline: auto; }
+    .site-header { background: var(--panel); border-bottom: 1px solid var(--border); }
+    .head-inner { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brand { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 750; }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 35px;
+      height: 35px;
+      border-radius: 9px;
+      background: hsl(187 48% 17%);
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: .04em;
+    }
+
+    button, input { font: inherit; }
+    button { cursor: pointer; border-radius: 8px; font-weight: 650; }
+    button:focus-visible, input:focus-visible, .table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .secondary { color: #d7e0ee; border: 1px solid var(--border); background: var(--panel); padding: 8px 12px; font-size: 13px; }
+    .secondary:hover { background: #222c3b; }
+    main { padding-block: 35px 48px; }
+    .title-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px 24px; flex-wrap: wrap; margin-bottom: 26px; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: clamp(27px, 5vw, 36px); line-height: 1.15; letter-spacing: -.035em; }
+    h2 { font-size: 17px; font-weight: 700; letter-spacing: -.015em; line-height: 1.35; }
+    .muted, .section-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .title-row .muted { margin-top: 7px; }
+
+    .connection { display: flex; align-items: center; flex-wrap: wrap; gap: 9px 12px; }
+    .pill { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 999px; padding: 5px 9px; color: #d7e0ee; font-size: 12px; line-height: 1.3; }
+    .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .pill[data-state="live"] { border-color: hsl(187 42% 27%); color: var(--accent); }
+    .pill[data-state="live"]::before { background: var(--accent); }
+    .pill[data-state="error"] { border-color: #60482e; color: var(--warning); }
+    .pill[data-state="error"]::before { background: var(--warning); }
+
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; min-width: 0; }
+    .notice { margin-bottom: 18px; border: 1px solid #60482e; color: var(--warning); background: #2a231d; border-radius: 9px; padding: 11px 14px; font-size: 14px; line-height: 1.5; }
+    .authentication { max-width: 440px; padding: 22px; }
+    .authentication p { margin-top: 7px; }
+    .authentication label { display: block; margin: 18px 0 6px; font-size: 14px; font-weight: 650; }
+    .authentication input { display: block; width: 100%; color: inherit; background: hsl(222 47% 7%); border: 1px solid #3b495f; border-radius: 8px; padding: 10px 11px; }
+    .authentication button { display: block; margin-top: 12px; border: 0; background: var(--accent); color: #10221e; padding: 9px 15px; }
+    .authentication button:hover { background: hsl(187 75% 66%); }
+    .authentication .notice { margin: 13px 0 0; }
+
+    .section-heading { margin-bottom: 11px; display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 5px 14px; }
+    .resources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .resource { padding: 15px 16px; }
+    .resource-label { color: var(--muted); font-size: 13px; font-weight: 650; }
+    .resource-value { display: block; font-size: clamp(18px, 2.25vw, 25px); font-weight: 720; line-height: 1.15; margin-top: 8px; letter-spacing: -.025em; }
+    .resource-detail { color: var(--muted); font-size: 12px; min-height: 18px; margin-top: 5px; }
+    .bar { display: block; height: 5px; background: #283345; border-radius: 999px; overflow: hidden; margin-top: 13px; }
+    .bar span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--accent); transition: width .18s ease; }
+    .resources .resource:nth-child(2) .bar span { background: #85b7ff; }
+    .resources .resource:nth-child(3) .bar span { background: #bea9fa; }
+    .quick, .service { margin: 12px 0 0; padding: 14px 16px; display: grid; }
+    .quick { grid-template-columns: 1fr 1fr; }
+    .service { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; }
+    .quick div, .service div { min-width: 0; }
+    .quick div + div, .service div + div { border-left: 1px solid var(--border); padding-left: 16px; }
+    dt { color: var(--muted); font-size: 13px; line-height: 1.4; }
+    dd { margin: 4px 0 0; font-size: 17px; font-weight: 650; overflow-wrap: anywhere; }
+    .resource-value, .resource-detail, dd, td, time { font-variant-numeric: tabular-nums; }
+    .dashboard-section + .dashboard-section { margin-top: 25px; }
+
+    .table-scroll { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; text-align: left; font-size: 13px; }
+    #vpn-table { min-width: 670px; }
+    #wireguard-table { min-width: 780px; }
+    #wireguard-table td:nth-child(2) { max-width: 190px; }
+    #interfaces-table { min-width: 350px; }
+    th, td { padding: 10px 14px; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; font-weight: 650; background: #19212e; white-space: nowrap; }
+    th:first-child { border-top-left-radius: 11px; }
+    th:last-child { border-top-right-radius: 11px; }
+    tbody tr { border-top: 1px solid var(--border); }
+    tbody tr:hover { background: #1c2533; }
+    td { overflow-wrap: anywhere; }
+    td:first-child { font-weight: 650; }
+    .numeric { text-align: right; white-space: nowrap; }
+    .empty { color: var(--muted); padding: 13px 14px; font-size: 13px; line-height: 1.45; }
+    .panel .section-note { padding: 8px 14px 11px; }
+
+    @media (max-width: 680px) {
+      main, .head-inner { width: calc(100% - 32px); }
+      .head-inner { min-height: 60px; }
+      main { padding-top: 24px; }
+      .title-row { margin-bottom: 20px; }
+      .resources { grid-template-columns: 1fr; gap: 8px; }
+      .resource { padding: 12px 14px; }
+      .resource-value { font-size: 20px; }
+      .dashboard-section + .dashboard-section { margin-top: 19px; }
+    }
+
+    @media (max-width: 410px) {
+      .service { grid-template-columns: 1fr; gap: 9px; }
+      .service div + div { border-left: 0; border-top: 1px solid var(--border); padding: 9px 0 0; }
+      .quick { gap: 8px; }
+      .quick div + div { padding-left: 10px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .bar span { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="head-inner">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">AZ</span>AdminPanelAZ</div>
+      <button id="change-token" class="secondary" type="button" hidden>Сменить токен</button>
+    </div>
+  </header>
+  <main>
+    <div class="title-row">
+      <div>
+        <h1>Мониторинг</h1>
+        <p class="muted">Состояние сервера и VPN-подключений</p>
+      </div>
+      <div id="connection" class="connection" hidden>
+        <span id="connection-state" class="pill" role="status">Загрузка</span>
+        <time id="updated" class="muted" hidden></time>
+      </div>
+    </div>
+
+    <noscript><p class="notice">Для мониторинга включите JavaScript в браузере.</p></noscript>
+    <form id="authentication" class="panel authentication" hidden>
+      <h2>Вход в панель</h2>
+      <p class="muted">Введите токен доступа APAZ_AUTH_TOKEN, заданный при запуске сервера.</p>
+      <label for="token">Токен доступа</label>
+      <input id="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+      <button type="submit">Войти</button>
+      <p id="auth-error" class="notice" role="alert" hidden></p>
+    </form>
+
+    <div id="dashboard" hidden>
+      <p id="request-error" class="notice" hidden></p>
+
+      <section class="dashboard-section" aria-labelledby="host-title">
+        <div class="section-heading">
+          <h2 id="host-title">Системные ресурсы</h2>
+          <p class="section-note">Сервер Linux</p>
+        </div>
+        <div class="resources">
+          <div class="panel resource">
+            <p class="resource-label">Процессор</p>
+            <strong id="cpu-value" class="resource-value">—</strong>
+            <p id="cpu-detail" class="resource-detail">Загрузка</p>
+            <span class="bar" aria-hidden="true"><span id="cpu-bar"></span></span>
+          </div>
+          <div class="panel resource">
+            <p class="resource-label">Оперативная память</p>
+            <strong id="memory-value" class="resource-value">—</strong>
+            <p id="memory-detail" class="resource-detail">Использовано</p>
+            <span class="bar" aria-hidden="true"><span id="memory-bar"></span></span>
+          </div>
+          <div class="panel resource">
+            <p class="resource-label">Диск</p>
+            <strong id="disk-value" class="resource-value">—</strong>
+            <p id="disk-detail" class="resource-detail">Использовано</p>
+            <span class="bar" aria-hidden="true"><span id="disk-bar"></span></span>
+          </div>
+        </div>
+        <dl class="panel quick">
+          <div><dt>Время работы сервера</dt><dd id="host-uptime">—</dd></div>
+          <div><dt>Установленные TCP-соединения</dt><dd id="tcp">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="dashboard-section" aria-labelledby="vpn-title">
+        <div class="section-heading">
+          <h2 id="vpn-title">Подключения OpenVPN</h2>
+          <p id="vpn-count" class="section-note"></p>
+        </div>
+        <div class="panel">
+          <p id="vpn-empty" class="empty">Ожидаем первый ответ сервера.</p>
+          <div id="vpn-scroll" class="table-scroll" role="region" aria-labelledby="vpn-title" tabindex="0" hidden>
+            <table id="vpn-table" aria-labelledby="vpn-title">
+              <thead><tr>
+                <th scope="col">Клиент</th><th scope="col">Удалённый адрес</th>
+                <th scope="col">VPN-адрес</th><th scope="col" class="numeric">Получено</th>
+                <th scope="col" class="numeric">Отправлено</th><th scope="col">Подключён с</th>
+              </tr></thead>
+              <tbody id="vpn-body"></tbody>
+            </table>
+          </div>
+          <p id="vpn-truncated" class="section-note" hidden></p>
+        </div>
+      </section>
+
+      <section class="dashboard-section" aria-labelledby="wireguard-title">
+        <div class="section-heading">
+          <h2 id="wireguard-title">Клиенты WireGuard</h2>
+          <p id="wireguard-count" class="section-note"></p>
+        </div>
+        <div class="panel">
+          <p id="wireguard-empty" class="empty">Ожидаем первый ответ сервера.</p>
+          <div id="wireguard-scroll" class="table-scroll" role="region" aria-labelledby="wireguard-title" tabindex="0" hidden>
+            <table id="wireguard-table" aria-labelledby="wireguard-title">
+              <thead><tr>
+                <th scope="col">Состояние</th><th scope="col">Клиент</th><th scope="col">Удалённый адрес</th>
+                <th scope="col">VPN-адреса</th><th scope="col" class="numeric">Получено</th>
+                <th scope="col" class="numeric">Отправлено</th><th scope="col">Последнее рукопожатие</th>
+              </tr></thead>
+              <tbody id="wireguard-body"></tbody>
+            </table>
+          </div>
+          <p id="wireguard-truncated" class="section-note" hidden></p>
+          <p id="wireguard-activity" class="section-note" hidden>Клиент считается активным, если рукопожатие произошло за последние 180 секунд.</p>
+        </div>
+      </section>
+
+      <section class="dashboard-section" aria-labelledby="interfaces-title">
+        <div class="section-heading">
+          <h2 id="interfaces-title">Сетевые интерфейсы</h2>
+          <p class="section-note">Накопленные счётчики Linux</p>
+        </div>
+        <div class="panel">
+          <p id="interfaces-empty" class="empty">Ожидаем первый ответ сервера.</p>
+          <div id="interfaces-scroll" class="table-scroll" role="region" aria-labelledby="interfaces-title" tabindex="0" hidden>
+            <table id="interfaces-table" aria-labelledby="interfaces-title">
+              <thead><tr>
+                <th scope="col">Интерфейс</th><th scope="col" class="numeric">Получено</th>
+                <th scope="col" class="numeric">Отправлено</th>
+              </tr></thead>
+              <tbody id="interfaces-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard-section" aria-labelledby="service-title">
+        <div class="section-heading"><h2 id="service-title">Служба AdminPanelAZ</h2></div>
+        <dl class="panel service">
+          <div><dt>Время работы процесса</dt><dd id="process-uptime">—</dd></div>
+          <div><dt>Открытые потоки SSE и WebSocket</dt><dd id="streams">—</dd></div>
+          <div><dt>Загружено через API</dt><dd id="uploaded">—</dd></div>
+        </dl>
+      </section>
+    </div>
+  </main>
+  <script>
+    "use strict";
+
+    const element = (id) => document.getElementById(id);
+    const setText = (id, value) => { element(id).textContent = value; };
+    const missing = "—";
+    const tokenKey = "adminpanelaz.token";
+    const pollInterval = 2000;
+    const requestTimeout = 8000;
+    const integer = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
+    const decimal = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
+    const timeFormat = new Intl.DateTimeFormat("ru-RU", { timeStyle: "medium" });
+    const dateTimeFormat = new Intl.DateTimeFormat("ru-RU", {
+      dateStyle: "short",
+      timeStyle: "medium"
+    });
+    const sizeUnits = ["Б", "КиБ", "МиБ", "ГиБ", "ТиБ", "ПиБ", "ЭиБ"];
+    let session;
+
+    function savedToken() {
+      try { return sessionStorage.getItem(tokenKey) || ""; }
+      catch { return ""; }
+    }
+
+    function rememberToken(token) {
+      try {
+        if (token) sessionStorage.setItem(tokenKey, token);
+        else sessionStorage.removeItem(tokenKey);
+      } catch {
+        // A blocked storage API still permits an in-memory session.
+      }
+    }
+
+    function isMetric(value) {
+      return typeof value === "number" && Number.isFinite(value) && value >= 0;
+    }
+
+    function count(value) {
+      return isMetric(value) ? integer.format(value) : missing;
+    }
+
+    function bytes(value) {
+      if (!isMetric(value)) return missing;
+      let unit = 0;
+      while (value >= 1024 && unit < sizeUnits.length - 1) {
+        value /= 1024;
+        unit++;
+      }
+      return decimal.format(value) + "\u00a0" + sizeUnits[unit];
+    }
+
+    function duration(value) {
+      if (!isMetric(value)) return missing;
+      const seconds = Math.floor(value);
+      const days = Math.floor(seconds / 86400);
+      const hours = Math.floor(seconds / 3600) % 24;
+      const minutes = Math.floor(seconds / 60) % 60;
+      if (days) return integer.format(days) + "\u00a0д " + hours + "\u00a0ч";
+      if (hours) return hours + "\u00a0ч " + minutes + "\u00a0мин";
+      if (minutes) return minutes + "\u00a0мин " + seconds % 60 + "\u00a0с";
+      return seconds + "\u00a0с";
+    }
+
+    function metricText(value) {
+      return typeof value === "string" && value.trim() ? value : missing;
+    }
+
+    function since(value) {
+      if (!isMetric(value) || value === 0) return metricText(value);
+      const date = new Date(value * 1000);
+      return Number.isFinite(date.getTime()) ? dateTimeFormat.format(date) : missing;
+    }
+
+    function bar(id, percent) {
+      element(id).style.width = (isMetric(percent) ? Math.min(100, percent) : 0) + "%";
+    }
+
+    function capacity(resource, used, total) {
+      const percent = isMetric(used) && isMetric(total) && total > 0 ? used * 100 / total : null;
+      setText(resource + "-value", bytes(used));
+      setText(resource + "-detail", isMetric(total) ? "из " + bytes(total) : "Использовано");
+      bar(resource + "-bar", percent);
+    }
+
+    function renderTable(table, rows, formatRow, emptyMessage, numericColumns) {
+      const fragment = document.createDocumentFragment();
+      for (const row of rows) {
+        const record = document.createElement("tr");
+        formatRow(row || {}).forEach((value, index) => {
+          const cell = document.createElement("td");
+          cell.textContent = value;
+          if (numericColumns.includes(index)) cell.className = "numeric";
+          record.appendChild(cell);
+        });
+        fragment.appendChild(record);
+      }
+      element(table + "-body").replaceChildren(fragment);
+      element(table + "-scroll").hidden = rows.length === 0;
+      element(table + "-empty").hidden = rows.length > 0;
+      setText(table + "-empty", emptyMessage);
+    }
+
+    function render(data) {
+      const host = data?.host || {};
+      const cpu = host.cpu_percent;
+      setText("cpu-value", isMetric(cpu) ? decimal.format(cpu) + "\u00a0%" : missing);
+      setText("cpu-detail", data && cpu === null ? "Ожидаем замер" : "Загрузка");
+      bar("cpu-bar", cpu);
+      capacity("memory", host.memory_used_bytes, host.memory_total_bytes);
+      capacity("disk", host.disk_used_bytes, host.disk_total_bytes);
+      setText("host-uptime", duration(host.uptime_seconds));
+      setText("tcp", count(host.tcp_established));
+      setText("process-uptime", duration(data?.uptime_seconds));
+      setText("streams", count(data?.streams));
+      setText("uploaded", bytes(data?.uploaded_bytes));
+
+      const interfaces = Array.isArray(host.interfaces) ? host.interfaces : [];
+      renderTable("interfaces", interfaces, (item) => [
+        metricText(item.name), bytes(item.rx_bytes), bytes(item.tx_bytes)
+      ], data ? "Нет данных об интерфейсах." : "Ожидаем первый ответ сервера.", [1, 2]);
+
+      renderVpn("vpn", data?.vpn, Boolean(data));
+      renderVpn("wireguard", data?.wireguard, Boolean(data));
+    }
+
+    function renderVpn(section, source, loaded) {
+      const wireguard = section === "wireguard";
+      const protocol = wireguard ? "WireGuard" : "OpenVPN";
+      const available = source?.state === "available";
+      const clients = available && Array.isArray(source.clients) ? source.clients : [];
+      let status = "Ожидаем первый ответ сервера.";
+      if (loaded) {
+        if (available) {
+          if (source.total === 0) {
+            status = wireguard ? "Клиенты WireGuard не зарегистрированы." : "Активных подключений OpenVPN нет.";
+          } else {
+            status = "Данные клиентов " + protocol + " отсутствуют.";
+          }
+        } else if (source?.state === "not_configured") {
+          status = "Источник данных о клиентах " + protocol + " не настроен.";
+        } else {
+          status = "Источник данных о клиентах " + protocol + " недоступен.";
+        }
+      }
+
+      let summary = "";
+      if (available) {
+        summary = (wireguard ? "Зарегистрировано: " : "Активных: ") + count(source.total);
+        if (wireguard) {
+          const haveCompleteList = clients.length === source.total && clients.every((client) => typeof client?.online === "boolean");
+          const active = isMetric(source.active) ? source.active :
+            haveCompleteList ? clients.filter((client) => client.online).length : null;
+          summary += " · Активных: " + count(active);
+        }
+      }
+      setText(section + "-count", summary);
+      renderTable(section, clients, (client) => {
+        const cells = [
+          metricText(client.name), metricText(client.remote), metricText(client.virtual_ip),
+          bytes(client.rx_bytes), bytes(client.tx_bytes), since(client.since)
+        ];
+        if (wireguard) {
+          let activity = missing;
+          if (client.online === true) activity = "Активен";
+          if (client.online === false) activity = "Неактивен";
+          cells.unshift(activity);
+        }
+        return cells;
+      }, status, wireguard ? [4, 5] : [3, 4]);
+      element(section + "-truncated").hidden = !(available && source.truncated);
+      setText(section + "-truncated", "Показано " + count(clients.length) + " из " + count(source?.total) + ".");
+      if (wireguard) element("wireguard-activity").hidden = !available;
+    }
+
+    function connectionState(state, label, error = "") {
+      const status = element("connection-state");
+      status.dataset.state = state;
+      if (status.textContent !== label) status.textContent = label;
+      element("request-error").hidden = !error;
+      setText("request-error", error);
+    }
+
+    function stopSession() {
+      if (!session) return;
+      const previous = session;
+      session = undefined;
+      clearTimeout(previous.timer);
+      previous.controller?.abort();
+    }
+
+    function authenticate(error = "", focus = false) {
+      stopSession();
+      rememberToken("");
+      render(null);
+      element("connection").hidden = true;
+      element("change-token").hidden = true;
+      element("dashboard").hidden = true;
+      element("authentication").hidden = false;
+      element("auth-error").hidden = !error;
+      setText("auth-error", error);
+      if (focus) element("token").focus();
+    }
+
+    async function poll(active) {
+      const controller = new AbortController();
+      active.controller = controller;
+      const started = performance.now();
+      const timeout = setTimeout(() => controller.abort(), requestTimeout);
+      try {
+        const response = await fetch("/api/monitor", {
+          headers: { Authorization: "Bearer " + active.token },
+          cache: "no-store",
+          credentials: "omit",
+          redirect: "error",
+          signal: controller.signal
+        });
+        if (session !== active) return;
+        if (response.status === 401 || response.status === 403) {
+          authenticate("Доступ отклонён. Проверьте токен и попробуйте снова.", true);
+          return;
+        }
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        const data = await response.json();
+        if (session !== active) return;
+        if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid response");
+
+        render(data);
+        connectionState("live", "Подключено");
+        const observed = new Date();
+        const updated = element("updated");
+        updated.dateTime = observed.toISOString();
+        updated.textContent = "Обновлено в " + timeFormat.format(observed);
+        updated.hidden = false;
+      } catch {
+        if (session !== active) return;
+        connectionState("error", "Нет связи",
+          "Не удалось получить метрики. Запрос повторится автоматически.");
+      } finally {
+        clearTimeout(timeout);
+        if (session === active) {
+          active.controller = undefined;
+          const elapsed = performance.now() - started;
+          active.timer = setTimeout(() => poll(active), Math.max(0, pollInterval - elapsed));
+        }
+      }
+    }
+
+    function startSession(token) {
+      stopSession();
+      session = { token };
+      rememberToken(token);
+      render(null);
+      element("authentication").hidden = true;
+      element("change-token").hidden = false;
+      element("connection").hidden = false;
+      element("updated").hidden = true;
+      element("dashboard").hidden = false;
+      connectionState("loading", "Загрузка");
+      poll(session);
+    }
+
+    element("authentication").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = element("token");
+      const token = input.value.trim();
+      if (!token) {
+        element("auth-error").hidden = false;
+        setText("auth-error", "Введите токен доступа.");
+        input.focus();
+        return;
+      }
+      input.value = "";
+      startSession(token);
+    });
+
+    element("change-token").addEventListener("click", () => authenticate("", true));
+
+    const initialToken = savedToken();
+    if (initialToken) startSession(initialToken);
+    else authenticate();
+  </script>
+</body>
+</html>

@@ -113,7 +113,39 @@ def check_monitor(client):
         require(status in (401, 403), f"Unauthenticated GET {path} returned {status}")
     status, body = client.request("GET", "/api/monitor", headers=AUTH)
     require(status == 200, f"GET /api/monitor returned {status}")
-    json_object(body, "Monitor")
+    monitor = json_object(body, "Monitor")
+    require(isinstance(monitor["host"]["interfaces"], list), "Missing host interfaces")
+    require(monitor["vpn"]["state"] == "not_configured", "Unexpected OpenVPN source")
+    require(monitor["wireguard"]["state"] == "not_configured", "Unexpected WireGuard source")
+
+
+def check_bundled_dashboard(command, data, log, tls):
+    openvpn = data / "openvpn.status"
+    openvpn.write_text(
+        "TITLE,OpenVPN test fixture\n"
+        "HEADER,CLIENT_LIST,Common Name,Real Address,Virtual Address,Bytes Received,Bytes Sent,Connected Since\n"
+        "CLIENT_LIST,client-a,192.0.2.2:1000,10.0.0.2,100,200,2026-01-01 00:00:00\nEND\n",
+        encoding="utf-8",
+    )
+    wireguard = data / "wireguard.status"
+    wireguard.write_text(
+        f"WIREGUARD_STATUS_V1\nvpn\tpeer\t192.0.2.3:1200\t10.0.0.3/32\t300\t400\t{int(time.time())}\nEND\n",
+        encoding="utf-8",
+    )
+    port = choose_port()
+    client = PanelClient(port, tls=tls)
+    command = [command[0], "--port", str(port), "--data-dir", str(data),
+               "--openvpn-status", str(openvpn), "--wireguard-status", str(wireguard), *command[9:]]
+    with run_panel(command, log) as process:
+        wait_for_server(process, client)
+        status, body = client.request("GET", "/")
+        require(status == 200 and "Мониторинг".encode() in body, "Embedded monitoring page did not load")
+        status, body = client.request("GET", "/api/monitor", headers=AUTH)
+        require(status == 200, f"Monitor returned {status}")
+        metrics = json_object(body, "Monitor")
+        require(metrics["vpn"]["clients"][0]["name"] == "client-a", "OpenVPN status missing")
+        require(metrics["wireguard"]["active"] == 1 and metrics["wireguard"]["clients"][0]["rx_bytes"] == 300,
+                "WireGuard status missing")
 
 
 def check_events(client):
@@ -325,6 +357,7 @@ def main():
                 check_websocket(client)
                 check_backup(client, data)
                 check_health(client)
+            check_bundled_dashboard(command, data, log, tls=args.tls_cert is not None)
         except (AssertionError, OSError, ValueError, http.client.HTTPException) as error:
             print(f"Smoke test failed: {error}", file=sys.stderr)
             if log.is_file():

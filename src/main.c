@@ -4,6 +4,11 @@
 
 #include <libwebsockets.h>
 
+#include "dashboard.h"
+#include "host_metrics.h"
+#include "vpn_status.h"
+#include "wireguard_status.h"
+
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -35,7 +40,8 @@
 #define is_regular S_ISREG
 #endif
 
-enum { PATH_CAP = 4096, TOKEN_CAP = 129, MAX_STREAMS = 12, MAX_INDEX = 32 * 1024 };
+enum { PATH_CAP = 4096, TOKEN_CAP = 129, MAX_STREAMS = 12, MAX_INDEX = 32 * 1024,
+       MAX_OPENVPN_PATHS = 8, CONNECTIONS_CAP = 16 * 1024, METRICS_CAP = CONNECTIONS_CAP * 2 + 4096 };
 static const unsigned long long upload_limit = 200ULL * 1024 * 1024;
 static const lws_usec_t sample_interval = 2 * LWS_US_PER_SEC;
 
@@ -46,6 +52,9 @@ struct config {
     const char *cert;
     const char *key;
     const char *token;
+    const char *openvpn[MAX_OPENVPN_PATHS];
+    size_t openvpn_count;
+    const char *wireguard;
     int port;
 };
 
@@ -61,6 +70,7 @@ struct upload {
 
 struct session {
     struct upload *upload;
+    char *dashboard_response;
     char response[256];
     unsigned int status;
     bool close_after_reply;
@@ -289,6 +299,16 @@ static const char *mime_type(const char *path)
     return NULL;
 }
 
+static const char *index_payload(void)
+{
+    return ui_index ? ui_index : (const char *)dashboard;
+}
+
+static size_t index_length(void)
+{
+    return ui_index ? ui_index_size : sizeof(dashboard);
+}
+
 static bool safe_ui_path(const char *uri)
 {
     if (uri[0] != '/')
@@ -341,8 +361,15 @@ static bool load_index(void)
 
 static int serve_ui(struct lws *wsi, struct session *session, const char *uri)
 {
-    if (!ui_root[0] || !safe_ui_path(uri))
+    if (!safe_ui_path(uri))
         return error_reply(wsi, session, 404, "not_found");
+
+    if (!ui_root[0]) {
+        if (strcmp(uri, "/") && strcmp(uri, "/monitoring") && strcmp(uri, "/index.html"))
+            return error_reply(wsi, session, 404, "not_found");
+        session->ui_index = true;
+        return reply(wsi, session, 200, "");
+    }
 
     const char *name = strrchr(uri, '/');
     if (!strcmp(uri, "/index.html") || (!strchr(name, '.') && strncmp(uri, "/assets/", 8))) {
@@ -360,6 +387,36 @@ static int serve_ui(struct lws *wsi, struct session *session, const char *uri)
     if (result < 0)
         return -1;
     return result > 0 ? lws_http_transaction_completed(wsi) : 0;
+}
+
+static int reply_dashboard_metrics(struct lws *wsi, struct session *session)
+{
+    char *payload = malloc(METRICS_CAP);
+    if (!payload)
+        return error_reply(wsi, session, 503, "out_of_memory");
+
+    metrics(payload, METRICS_CAP);
+    size_t size = strlen(payload) - 1;
+    memcpy(payload + size, ",\"host\":", 8);
+    size += 8;
+    size_t host = host_metrics_json(payload + size, 4096 - size, config.data);
+    size += host;
+    memcpy(payload + size, ",\"vpn\":", 7);
+    size += 7;
+    size_t vpn = vpn_statuses_json(payload + size, CONNECTIONS_CAP, config.openvpn, config.openvpn_count);
+    size += vpn;
+    memcpy(payload + size, ",\"wireguard\":", 13);
+    size += 13;
+    size_t wireguard = wireguard_status_json(payload + size, METRICS_CAP - size - 1, config.wireguard);
+    size += wireguard;
+    if (!host || !vpn || !wireguard) {
+        free(payload);
+        return error_reply(wsi, session, 503, "monitoring_data_unavailable");
+    }
+    payload[size] = '}';
+    payload[size + 1] = '\0';
+    session->dashboard_response = payload;
+    return reply(wsi, session, 200, "");
 }
 
 static int request(struct lws *wsi, struct session *session)
@@ -381,10 +438,8 @@ static int request(struct lws *wsi, struct session *session)
                 error_reply(wsi, session, 405, "method_not_allowed");
         if (method != LWSHUMETH_GET)
             return error_reply(wsi, session, 405, "method_not_allowed");
-        if (!strcmp(uri, "/api/monitor")) {
-            metrics(session->response, sizeof(session->response));
-            return reply(wsi, session, 200, session->response);
-        }
+        if (!strcmp(uri, "/api/monitor"))
+            return reply_dashboard_metrics(wsi, session);
         if (subscribers >= MAX_STREAMS)
             return error_reply(wsi, session, 503, "too_many_streams");
         session->subscribed = true;
@@ -400,6 +455,18 @@ static int request(struct lws *wsi, struct session *session)
     return serve_ui(wsi, session, uri);
 }
 
+static const char *response_payload(const struct session *session)
+{
+    if (session->ui_index)
+        return index_payload();
+    return session->dashboard_response ? session->dashboard_response : session->response;
+}
+
+static size_t response_length(const struct session *session)
+{
+    return session->ui_index ? index_length() : strlen(response_payload(session));
+}
+
 static int write_headers(struct lws *wsi, const struct session *session)
 {
     unsigned char buffer[LWS_PRE + 512];
@@ -408,7 +475,7 @@ static int write_headers(struct lws *wsi, const struct session *session)
     unsigned char *end = buffer + sizeof(buffer);
     unsigned int status = session->subscribed ? 200 : session->status;
     const char *type = session->ui_index ? "text/html; charset=utf-8" : "application/json";
-    lws_filepos_t length = session->ui_index ? ui_index_size : strlen(session->response);
+    lws_filepos_t length = response_length(session);
     if (session->subscribed) {
         type = "text/event-stream";
         length = LWS_ILLEGAL_HTTP_CONTENT_LEN;
@@ -450,8 +517,8 @@ static int write_http(struct lws *wsi, struct session *session)
         lws_set_timer_usecs(wsi, sample_interval);
         return 0;
     }
-    const char *payload = session->ui_index ? ui_index : session->response;
-    size_t remaining = (session->ui_index ? ui_index_size : strlen(payload)) - session->offset;
+    const char *payload = response_payload(session);
+    size_t remaining = response_length(session) - session->offset;
     size_t capacity = sizeof(output) - LWS_PRE;
     size_t size = remaining < capacity ? remaining : capacity;
     bool last = size == remaining;
@@ -472,6 +539,8 @@ static void cleanup(struct session *session)
         session->subscribed = false;
     }
     discard_upload(session);
+    free(session->dashboard_response);
+    session->dashboard_response = NULL;
 }
 
 static int callback(struct lws *wsi, enum lws_callback_reasons event, void *user, void *in, size_t len)
@@ -554,6 +623,7 @@ static void stop(int sig)
 static void usage(void)
 {
     puts("adminpanelaz-lws [--bind IP] [--port N] [--ui-dir PATH] [--data-dir PATH]\n"
+         "                 [--openvpn-status PATH ...] [--wireguard-status PATH]\n"
          "                 [--tls-cert PEM --tls-key PEM]\n"
          "Set APAZ_AUTH_TOKEN to a random token of 32 to 128 URL-safe ASCII characters.");
 }
@@ -577,6 +647,12 @@ static bool parse_options(int argc, char **argv)
             config.ui = value;
         } else if (!strcmp(option, "--data-dir")) {
             config.data = value;
+        } else if (!strcmp(option, "--openvpn-status")) {
+            if (config.openvpn_count == MAX_OPENVPN_PATHS)
+                return false;
+            config.openvpn[config.openvpn_count++] = value;
+        } else if (!strcmp(option, "--wireguard-status")) {
+            config.wireguard = value;
         } else if (!strcmp(option, "--tls-cert")) {
             config.cert = value;
         } else if (!strcmp(option, "--tls-key")) {
