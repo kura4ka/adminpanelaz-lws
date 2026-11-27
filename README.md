@@ -6,10 +6,21 @@
 
 GitHub Actions отдельно собирает и проверяет прототип на Ubuntu 24.04 и Debian 13.
 
+На свежем сервере установите зависимости и получите исходники приватного репозитория. Команды `apt-get` выполняйте от root или через `sudo`.
+
 ```sh
-sudo apt-get install build-essential cmake libwebsockets-dev openssl python3
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+sudo apt-get update
+sudo apt-get install -y git gh build-essential cmake libwebsockets-dev openssl python3
+gh auth login --hostname github.com --git-protocol https --web &&
+gh repo clone kura4ka/adminpanelaz-lws
+```
+
+Откройте адрес, который покажет `gh`, в браузере на своём компьютере и введите одноразовый код. Если репозиторий уже клонирован, начните со следующего блока. Выполняйте CMake из каталога, где находится `CMakeLists.txt`.
+
+```sh
+cd adminpanelaz-lws &&
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release &&
+cmake --build build --parallel 1
 ```
 
 ## Запуск
