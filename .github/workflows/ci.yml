@@ -1,0 +1,36 @@
+name: Build and smoke test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:13']
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates cmake git libwebsockets-dev openssl python3
+      - uses: actions/checkout@v4
+      - name: Compile
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+      - name: Check HTTP and HTTPS
+        run: |
+          python3 tests/smoke.py ./build/adminpanelaz-lws
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 -subj /CN=localhost \
+            -keyout "$RUNNER_TEMP/test.key" -out "$RUNNER_TEMP/test.crt"
+          python3 tests/smoke.py ./build/adminpanelaz-lws \
+            --tls-cert "$RUNNER_TEMP/test.crt" --tls-key "$RUNNER_TEMP/test.key"

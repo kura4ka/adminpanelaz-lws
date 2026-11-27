@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.18)
+project(adminpanelaz_lws VERSION 0.1.0 LANGUAGES C)
+
+find_package(libwebsockets 4.1 CONFIG REQUIRED)
+
+add_executable(adminpanelaz-lws src/main.c)
+target_compile_features(adminpanelaz-lws PRIVATE c_std_11)
+if(TARGET websockets_shared)
+    target_link_libraries(adminpanelaz-lws PRIVATE websockets_shared)
+else()
+    target_link_libraries(adminpanelaz-lws PRIVATE websockets)
+endif()
+if(MSVC)
+    target_compile_options(adminpanelaz-lws PRIVATE /W4)
+else()
+    target_compile_options(adminpanelaz-lws PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+install(TARGETS adminpanelaz-lws RUNTIME DESTINATION bin)
