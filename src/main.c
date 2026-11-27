@@ -8,6 +8,12 @@
 #include "host_metrics.h"
 #include "vpn_status.h"
 #include "wireguard_status.h"
+#include "panel_auth.h"
+#include "panel_backups.h"
+#include "panel_backup_create.h"
+#include "panel_profiles.h"
+#include <openssl/crypto.h>
+#include <openssl/rand.h>
 
 #include <ctype.h>
 #include <errno.h>
@@ -41,7 +47,8 @@
 #endif
 
 enum { PATH_CAP = 4096, TOKEN_CAP = 129, MAX_STREAMS = 12, MAX_INDEX = 32 * 1024,
-       MAX_OPENVPN_PATHS = 8, CONNECTIONS_CAP = 16 * 1024, METRICS_CAP = CONNECTIONS_CAP * 2 + 4096 };
+       MAX_OPENVPN_PATHS = 8, CONNECTIONS_CAP = 16 * 1024, METRICS_CAP = CONNECTIONS_CAP * 2 + 4096,
+       AUTH_FORM_LIMIT = 4096 };
 static const unsigned long long upload_limit = 200ULL * 1024 * 1024;
 static const lws_usec_t sample_interval = 2 * LWS_US_PER_SEC;
 
@@ -55,6 +62,8 @@ struct config {
     const char *openvpn[MAX_OPENVPN_PATHS];
     size_t openvpn_count;
     const char *wireguard;
+    const char *auth_db;
+    const char *profiles;
     int port;
 };
 
@@ -71,6 +80,17 @@ struct upload {
 struct session {
     struct upload *upload;
     char *dashboard_response;
+    char *form;
+    size_t form_length;
+    size_t form_received;
+    enum { AUTH_NONE, AUTH_LOGIN, AUTH_CHANGE } form_action;
+    char current_token[65];
+    char cookie[65];
+    bool clear_cookie;
+    unsigned int retry_after;
+    FILE *profile;
+    size_t profile_size;
+    char filename[129];
     char response[256];
     unsigned int status;
     bool close_after_reply;
@@ -122,7 +142,7 @@ static bool ensure_directory(const char *path)
     return make_dir(path) == 0 || (errno == EEXIST && directory_exists(path));
 }
 
-static bool authorized(struct lws *wsi)
+static bool bearer_authorized(struct lws *wsi)
 {
     char authorization[TOKEN_CAP + sizeof("Bearer ")];
     int size = lws_hdr_copy(wsi, authorization, sizeof(authorization), WSI_TOKEN_HTTP_AUTHORIZATION);
@@ -134,6 +154,39 @@ static bool authorized(struct lws *wsi)
     for (size_t i = 0; i < token_size; ++i)
         difference |= (unsigned char)authorization[7 + i] ^ (unsigned char)config.token[i];
     return difference == 0;
+}
+
+static bool session_token(struct lws *wsi, char token[65])
+{
+    const char name[] = "apaz_session=";
+    char header[2048];
+    if (!config.auth_db || lws_hdr_copy(wsi, header, sizeof(header), WSI_TOKEN_HTTP_COOKIE) <= 0)
+        return false;
+    for (char *p = header; p; ) {
+        while (*p == ' ')
+            ++p;
+        char *end = strchr(p, ';');
+        if (end)
+            *end = '\0';
+        if (!strncmp(p, name, sizeof(name) - 1) && strlen(p + sizeof(name) - 1) == 64 &&
+            strspn(p + sizeof(name) - 1, "0123456789abcdef") == 64) {
+            memcpy(token, p + sizeof(name) - 1, 65);
+            return true;
+        }
+        p = end ? end + 1 : NULL;
+    }
+    return false;
+}
+
+static bool session_authorized(struct lws *wsi)
+{
+    char token[65];
+    return session_token(wsi, token) && panel_auth_session(token, NULL);
+}
+
+static bool authorized(struct lws *wsi)
+{
+    return bearer_authorized(wsi) || session_authorized(wsi);
 }
 
 static void metrics(char *out, size_t capacity)
@@ -161,11 +214,192 @@ static int error_reply(struct lws *wsi, struct session *session, unsigned int st
     return reply(wsi, session, status, session->response);
 }
 
+static bool same_origin(struct lws *wsi)
+{
+    char origin[300], host[256], expected[300];
+    if (!lws_hdr_total_length(wsi, WSI_TOKEN_ORIGIN))
+        return true;
+    if (lws_hdr_copy(wsi, origin, sizeof(origin), WSI_TOKEN_ORIGIN) < 1 ||
+        lws_hdr_copy(wsi, host, sizeof(host), WSI_TOKEN_HOST) < 1)
+        return false;
+    snprintf(expected, sizeof(expected), "%s://%s", lws_is_ssl(wsi) ? "https" : "http", host);
+    return !strcmp(expected, origin);
+}
+
+static int begin_form(struct lws *wsi, struct session *session, int action)
+{
+    char type[80], length[16];
+    if (lws_hdr_copy(wsi, type, sizeof(type), WSI_TOKEN_HTTP_CONTENT_TYPE) <= 0 ||
+        (strcmp(type, "application/x-www-form-urlencoded") && strcmp(type, "application/x-www-form-urlencoded;charset=UTF-8")))
+        return error_reply(wsi, session, 415, "unsupported_content_type");
+    if (lws_hdr_copy(wsi, length, sizeof(length), WSI_TOKEN_HTTP_CONTENT_LENGTH) <= 0 ||
+        strspn(length, "0123456789") != strlen(length))
+        return error_reply(wsi, session, 411, "content_length_required");
+    unsigned long size = strtoul(length, NULL, 10);
+    if (!size || size > AUTH_FORM_LIMIT)
+        return error_reply(wsi, session, 413, "invalid_form_size");
+    session->form = malloc(size + 1);
+    if (!session->form)
+        return error_reply(wsi, session, 503, "out_of_memory");
+    session->form_action = action;
+    session->form_length = size;
+    return 0;
+}
+
+static int hex_value(unsigned char ch)
+{
+    if (ch >= '0' && ch <= '9')
+        return ch - '0';
+    ch = (unsigned char)tolower(ch);
+    return ch >= 'a' && ch <= 'f' ? ch - 'a' + 10 : -1;
+}
+
+static bool decode_form_value(char *text)
+{
+    char *put = text;
+    while (*text) {
+        if (*text == '%') {
+            if (!text[1] || !text[2])
+                return false;
+            int hi = hex_value((unsigned char)text[1]), lo = hex_value((unsigned char)text[2]);
+            if (hi < 0 || lo < 0 || !(hi || lo))
+                return false;
+            *put++ = (char)((hi << 4) | lo);
+            text += 3;
+        } else {
+            *put++ = *text == '+' ? ' ' : *text;
+            ++text;
+        }
+    }
+    *put = '\0';
+    return true;
+}
+
+static bool auth_form_fields(struct session *session, char **first, char **second)
+{
+    if (session->form_received != session->form_length || memchr(session->form, 0, session->form_length))
+        return false;
+    session->form[session->form_length] = '\0';
+    const char *first_key = session->form_action == AUTH_LOGIN ? "username" : "old_password";
+    const char *second_key = session->form_action == AUTH_LOGIN ? "password" : "new_password";
+    for (char *pair = session->form; pair; ) {
+        char *next = strchr(pair, '&');
+        if (next)
+            *next++ = '\0';
+        char *value = strchr(pair, '=');
+        if (!value)
+            return false;
+        *value++ = '\0';
+        if (!decode_form_value(value))
+            return false;
+        if (!strcmp(pair, first_key) && !*first)
+            *first = value;
+        else if (!strcmp(pair, second_key) && !*second)
+            *second = value;
+        else
+            return false;
+        pair = next;
+    }
+    return *first && *second;
+}
+
+static void discard_form(struct session *session)
+{
+    if (session->form) {
+        OPENSSL_cleanse(session->form, session->form_length + 1);
+        free(session->form);
+        session->form = NULL;
+    }
+}
+
+static int finish_form(struct lws *wsi, struct session *session)
+{
+    char *first = NULL, *second = NULL;
+    if (!auth_form_fields(session, &first, &second)) {
+        discard_form(session);
+        return error_reply(wsi, session, 400, "invalid_auth_form");
+    }
+    if (session->form_action == AUTH_CHANGE && strlen(second) < 12) {
+        discard_form(session);
+        return error_reply(wsi, session, 400, "new_password_too_short");
+    }
+    session->retry_after = panel_auth_retry_after();
+    if (session->retry_after) {
+        discard_form(session);
+        return error_reply(wsi, session, 429, "too_many_attempts");
+    }
+    bool success = session->form_action == AUTH_LOGIN ? panel_auth_login(first, second, session->cookie) :
+        panel_auth_change_password(session->current_token, first, second);
+    discard_form(session);
+    if (!success)
+        return error_reply(wsi, session, 401, "invalid_credentials");
+    if (session->form_action == AUTH_CHANGE) {
+        session->clear_cookie = true;
+        return reply(wsi, session, 200, "{\"status\":\"ok\"}");
+    }
+    return reply(wsi, session, 200, "{\"username\":\"admin\",\"method\":\"session\"}");
+}
+
+static int auth_request(struct lws *wsi, struct session *session, const char *uri, int method)
+{
+    const char *route = uri + sizeof("/api/auth/") - 1;
+    if (!strcmp(route, "me")) {
+        if (method != LWSHUMETH_GET)
+            return error_reply(wsi, session, 405, "method_not_allowed");
+        if (session_authorized(wsi))
+            return reply(wsi, session, 200, "{\"username\":\"admin\",\"method\":\"session\"}");
+        if (bearer_authorized(wsi))
+            return reply(wsi, session, 200, "{\"username\":\"admin\",\"method\":\"token\"}");
+        return error_reply(wsi, session, 401, "unauthorized");
+    }
+    if (!config.auth_db || (strcmp(route, "login") && strcmp(route, "change-password") && strcmp(route, "logout")))
+        return error_reply(wsi, session, 404, "not_found");
+    if (method != LWSHUMETH_POST)
+        return error_reply(wsi, session, 405, "method_not_allowed");
+    if (!same_origin(wsi))
+        return error_reply(wsi, session, 403, "unexpected_origin");
+    if (!strcmp(route, "logout")) {
+        char token[65];
+        if (session_token(wsi, token))
+            panel_auth_logout(token);
+        session->clear_cookie = true;
+        return reply(wsi, session, 200, "{\"status\":\"ok\"}");
+    }
+    if (!strcmp(route, "change-password")) {
+        if (!session_token(wsi, session->current_token) || !panel_auth_session(session->current_token, NULL))
+            return error_reply(wsi, session, 401, "unauthorized");
+        return begin_form(wsi, session, AUTH_CHANGE);
+    }
+    return begin_form(wsi, session, AUTH_LOGIN);
+}
+
 static bool upload_path(char *out, const struct upload *upload, const char *suffix)
 {
     char name[48];
     snprintf(name, sizeof(name), "%s%s", upload->id, suffix);
     return join_path(out, backups, name);
+}
+
+static bool backup_id(char out[33])
+{
+    unsigned char random[16];
+    if (RAND_bytes(random, sizeof(random)) != 1)
+        return false;
+    for (size_t i = 0; i < sizeof(random); ++i)
+        snprintf(out + 2 * i, 3, "%02x", (unsigned int)random[i]);
+    return true;
+}
+
+static bool publish_upload(const char *partial, const char *final)
+{
+#ifdef _WIN32
+    return rename(partial, final) == 0;
+#else
+    if (link(partial, final) != 0)
+        return false;
+    (void)unlink(partial);
+    return true;
+#endif
 }
 
 static void discard_upload(struct session *session)
@@ -203,16 +437,14 @@ static int begin_upload(struct lws *wsi, struct session *session)
         strcmp(type, "application/octet-stream"))
         return error_reply(wsi, session, 415, "expected_application_octet_stream");
 
-    unsigned char random[16];
-    if (lws_get_random(lws_get_context(wsi), random, sizeof(random)) != (int)sizeof(random))
-        return error_reply(wsi, session, 500, "random_id_unavailable");
-
     struct upload *upload = calloc(1, sizeof(*upload));
     if (!upload)
         return error_reply(wsi, session, 503, "out_of_memory");
     char partial[PATH_CAP];
-    for (size_t i = 0; i < sizeof(random); ++i)
-        snprintf(upload->id + 2 * i, 3, "%02x", (unsigned int)random[i]);
+    if (!backup_id(upload->id)) {
+        free(upload);
+        return error_reply(wsi, session, 500, "random_id_unavailable");
+    }
     int fd = upload_path(partial, upload, ".part") ? open_upload(partial) : -1;
     if (fd < 0) {
         free(upload);
@@ -271,7 +503,7 @@ static int finish_upload(struct lws *wsi, struct session *session)
     char partial[PATH_CAP];
     char final[PATH_CAP];
     if (close_result || !upload_path(partial, upload, ".part") ||
-        !upload_path(final, upload, ".backup") || rename(partial, final) != 0) {
+        !upload_path(final, upload, ".backup") || !publish_upload(partial, final)) {
         discard_upload(session);
         return error_reply(wsi, session, 500, "cannot_commit_backup");
     }
@@ -419,6 +651,93 @@ static int reply_dashboard_metrics(struct lws *wsi, struct session *session)
     return reply(wsi, session, 200, "");
 }
 
+static int file_download(struct lws *wsi, struct session *session, FILE *file, size_t size)
+{
+    if (!file)
+        return error_reply(wsi, session, 404, "not_found");
+    session->profile = file;
+    session->profile_size = size;
+    return reply(wsi, session, 200, "");
+}
+
+static bool admin_authorized(struct lws *wsi)
+{
+    return config.auth_db ? session_authorized(wsi) : bearer_authorized(wsi);
+}
+
+static int inventory_request(struct lws *wsi, struct session *session, const char *uri, int method, bool profiles)
+{
+    if (!admin_authorized(wsi))
+        return error_reply(wsi, session, 401, "unauthorized");
+    if (method == LWSHUMETH_POST && !strcmp(uri, "/api/backups/upload")) {
+        if (!same_origin(wsi))
+            return error_reply(wsi, session, 403, "unexpected_origin");
+        return begin_upload(wsi, session);
+    }
+    if (method == LWSHUMETH_POST && !strcmp(uri, "/api/backups/create")) {
+        char id[33];
+        if (!same_origin(wsi))
+            return error_reply(wsi, session, 403, "unexpected_origin");
+        if (!config.auth_db)
+            return error_reply(wsi, session, 503, "backup_source_unavailable");
+        if (!backup_id(id) || !panel_backup_create(backups, config.auth_db, id))
+            return error_reply(wsi, session, 500, "backup_create_failed");
+        snprintf(session->response, sizeof(session->response), "{\"name\":\"%s.backup\"}", id);
+        return reply(wsi, session, 201, session->response);
+    }
+    if (method != LWSHUMETH_GET)
+        return error_reply(wsi, session, 405, "method_not_allowed");
+
+    const char *root = profiles ? "/api/profiles" : "/api/backups";
+    const char *rest = uri + strlen(root);
+    if (!*rest) {
+        char *payload = malloc(METRICS_CAP);
+        if (!payload)
+            return error_reply(wsi, session, 503, "out_of_memory");
+        size_t size = profiles ? panel_profiles_json(payload, METRICS_CAP, config.profiles) :
+            panel_backups_json(payload, METRICS_CAP, backups);
+        if (!size) {
+            free(payload);
+            return error_reply(wsi, session, 503, "inventory_unavailable");
+        }
+        session->dashboard_response = payload;
+        return reply(wsi, session, 200, "");
+    }
+
+    ++rest;
+    const char *action = strchr(rest, '/');
+    char id[135];
+    if (!action || action == rest || (size_t)(action - rest) >= sizeof(id))
+        return error_reply(wsi, session, 404, "not_found");
+    size_t length = (size_t)(action - rest);
+    memcpy(id, rest, length);
+    id[length] = '\0';
+    if (profiles) {
+        if (strcmp(action, "/download"))
+            return error_reply(wsi, session, 404, "not_found");
+        size_t size = 0;
+        FILE *file = panel_profile_open(config.profiles, id, session->filename, &size);
+        return file_download(wsi, session, file, size);
+    }
+
+    char path[PATH_CAP];
+    if (!panel_backup_path(path, sizeof(path), backups, id))
+        return error_reply(wsi, session, 404, "not_found");
+    if (!strcmp(action, "/inspect")) {
+        size_t size = panel_backup_inspect_json(session->response, sizeof(session->response), path);
+        return size ? reply(wsi, session, 200, session->response) :
+            error_reply(wsi, session, 503, "inspection_unavailable");
+    }
+    if (strcmp(action, "/download") || strlen(id) >= sizeof(session->filename))
+        return error_reply(wsi, session, 404, "not_found");
+    struct stat info;
+    if (stat(path, &info) || !is_regular(info.st_mode) || info.st_size <= 0 ||
+        (unsigned long long)info.st_size > upload_limit)
+        return error_reply(wsi, session, 404, "not_found");
+    strcpy(session->filename, id);
+    return file_download(wsi, session, fopen(path, "rb"), (size_t)info.st_size);
+}
+
 static int request(struct lws *wsi, struct session *session)
 {
     char *uri;
@@ -429,13 +748,15 @@ static int request(struct lws *wsi, struct session *session)
     session->head = method == LWSHUMETH_HEAD;
     if (!strcmp(uri, "/api/health") && method == LWSHUMETH_GET)
         return reply(wsi, session, 200, "{\"status\":\"ok\"}");
-    if (!strcmp(uri, "/api/monitor") || !strcmp(uri, "/api/monitor/events") ||
-        !strcmp(uri, "/api/backups/upload")) {
+    if (!strncmp(uri, "/api/auth/", sizeof("/api/auth/") - 1))
+        return auth_request(wsi, session, uri, method);
+    if (!strcmp(uri, "/api/profiles") || !strncmp(uri, "/api/profiles/", sizeof("/api/profiles/") - 1))
+        return inventory_request(wsi, session, uri, method, true);
+    if (!strcmp(uri, "/api/backups") || !strncmp(uri, "/api/backups/", sizeof("/api/backups/") - 1))
+        return inventory_request(wsi, session, uri, method, false);
+    if (!strcmp(uri, "/api/monitor") || !strcmp(uri, "/api/monitor/events")) {
         if (!authorized(wsi))
             return error_reply(wsi, session, 401, "unauthorized");
-        if (!strcmp(uri, "/api/backups/upload"))
-            return method == LWSHUMETH_POST ? begin_upload(wsi, session) :
-                error_reply(wsi, session, 405, "method_not_allowed");
         if (method != LWSHUMETH_GET)
             return error_reply(wsi, session, 405, "method_not_allowed");
         if (!strcmp(uri, "/api/monitor"))
@@ -464,17 +785,20 @@ static const char *response_payload(const struct session *session)
 
 static size_t response_length(const struct session *session)
 {
+    if (session->profile)
+        return session->profile_size;
     return session->ui_index ? index_length() : strlen(response_payload(session));
 }
 
 static int write_headers(struct lws *wsi, const struct session *session)
 {
-    unsigned char buffer[LWS_PRE + 512];
+    unsigned char buffer[LWS_PRE + 768];
     unsigned char *start = buffer + LWS_PRE;
     unsigned char *p = start;
     unsigned char *end = buffer + sizeof(buffer);
     unsigned int status = session->subscribed ? 200 : session->status;
-    const char *type = session->ui_index ? "text/html; charset=utf-8" : "application/json";
+    const char *type = session->ui_index ? "text/html; charset=utf-8" :
+        session->profile ? "application/octet-stream" : "application/json";
     lws_filepos_t length = response_length(session);
     if (session->subscribed) {
         type = "text/event-stream";
@@ -488,10 +812,32 @@ static int write_headers(struct lws *wsi, const struct session *session)
                                    (const unsigned char *)"nosniff", 7, &p, end) ||
         ((session->subscribed || session->close_after_reply) &&
          lws_add_http_header_by_name(wsi, (const unsigned char *)"connection:",
-                                    (const unsigned char *)"close", 5, &p, end)) ||
-        lws_finalize_write_http_header(wsi, start, &p, end))
+                                    (const unsigned char *)"close", 5, &p, end)))
         return -1;
-    return 0;
+    if (session->cookie[0] || session->clear_cookie) {
+        char cookie[192];
+        int size = snprintf(cookie, sizeof(cookie), "apaz_session=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict%s",
+                            session->clear_cookie ? "" : session->cookie, session->clear_cookie ? 0 : 604800,
+                            lws_is_ssl(wsi) ? "; Secure" : "");
+        if (lws_add_http_header_by_name(wsi, (const unsigned char *)"set-cookie:",
+                                       (const unsigned char *)cookie, size, &p, end))
+            return -1;
+    }
+    if (session->retry_after) {
+        char delay[16];
+        int size = snprintf(delay, sizeof(delay), "%u", session->retry_after);
+        if (lws_add_http_header_by_name(wsi, (const unsigned char *)"retry-after:",
+                                       (const unsigned char *)delay, size, &p, end))
+            return -1;
+    }
+    if (session->profile) {
+        char disposition[160];
+        int size = snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", session->filename);
+        if (lws_add_http_header_by_name(wsi, (const unsigned char *)"content-disposition:",
+                                       (const unsigned char *)disposition, size, &p, end))
+            return -1;
+    }
+    return lws_finalize_write_http_header(wsi, start, &p, end) ? -1 : 0;
 }
 
 static int write_http(struct lws *wsi, struct session *session)
@@ -517,12 +863,16 @@ static int write_http(struct lws *wsi, struct session *session)
         lws_set_timer_usecs(wsi, sample_interval);
         return 0;
     }
-    const char *payload = response_payload(session);
     size_t remaining = response_length(session) - session->offset;
     size_t capacity = sizeof(output) - LWS_PRE;
     size_t size = remaining < capacity ? remaining : capacity;
     bool last = size == remaining;
-    memcpy(body, payload + session->offset, size);
+    if (session->profile) {
+        if (fread(body, 1, size, session->profile) != size)
+            return -1;
+    } else {
+        memcpy(body, response_payload(session) + session->offset, size);
+    }
     if (lws_write(wsi, body, size, last ? LWS_WRITE_HTTP_FINAL : LWS_WRITE_HTTP) < (int)size)
         return -1;
     if (last)
@@ -539,6 +889,11 @@ static void cleanup(struct session *session)
         session->subscribed = false;
     }
     discard_upload(session);
+    discard_form(session);
+    if (session->profile) {
+        fclose(session->profile);
+        session->profile = NULL;
+    }
     free(session->dashboard_response);
     session->dashboard_response = NULL;
 }
@@ -553,8 +908,19 @@ static int callback(struct lws *wsi, enum lws_callback_reasons event, void *user
     case LWS_CALLBACK_HTTP:
         return request(wsi, session);
     case LWS_CALLBACK_HTTP_BODY:
+        if (session->form) {
+            if (len > session->form_length - session->form_received) {
+                discard_form(session);
+                return error_reply(wsi, session, 400, "invalid_auth_form");
+            }
+            memcpy(session->form + session->form_received, in, len);
+            session->form_received += len;
+            return 0;
+        }
         return receive_upload(wsi, session, in, len);
     case LWS_CALLBACK_HTTP_BODY_COMPLETION:
+        if (session->form)
+            return finish_form(wsi, session);
         return finish_upload(wsi, session);
     case LWS_CALLBACK_HTTP_WRITEABLE:
         if (session->status || session->subscribed)
@@ -623,6 +989,7 @@ static void stop(int sig)
 static void usage(void)
 {
     puts("adminpanelaz-lws [--bind IP] [--port N] [--ui-dir PATH] [--data-dir PATH]\n"
+         "                 [--auth-db PATH] [--profiles-dir PATH]\n"
          "                 [--openvpn-status PATH ...] [--wireguard-status PATH]\n"
          "                 [--tls-cert PEM --tls-key PEM]\n"
          "Set APAZ_AUTH_TOKEN to a random token of 32 to 128 URL-safe ASCII characters.");
@@ -647,6 +1014,10 @@ static bool parse_options(int argc, char **argv)
             config.ui = value;
         } else if (!strcmp(option, "--data-dir")) {
             config.data = value;
+        } else if (!strcmp(option, "--auth-db")) {
+            config.auth_db = value;
+        } else if (!strcmp(option, "--profiles-dir")) {
+            config.profiles = value;
         } else if (!strcmp(option, "--openvpn-status")) {
             if (config.openvpn_count == MAX_OPENVPN_PATHS)
                 return false;
@@ -690,6 +1061,11 @@ int main(int argc, char **argv)
         free(ui_index);
         return 2;
     }
+    if (config.auth_db && !panel_auth_open(config.auth_db, config.token)) {
+        fputs("Cannot open panel auth database.\n", stderr);
+        free(ui_index);
+        return 2;
+    }
 
     struct lws_context_creation_info info = {0};
     info.iface = config.bind;
@@ -711,6 +1087,7 @@ int main(int argc, char **argv)
     started = time(NULL);
     struct lws_context *context = lws_create_context(&info);
     if (!context) {
+        panel_auth_close();
         free(ui_index);
         return 1;
     }
@@ -718,6 +1095,7 @@ int main(int argc, char **argv)
     while (!stopping && status >= 0)
         status = lws_service(context, 0);
     lws_context_destroy(context);
+    panel_auth_close();
     free(ui_index);
     return status < 0 && !stopping ? 1 : 0;
 }

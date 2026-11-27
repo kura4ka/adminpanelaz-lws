@@ -64,8 +64,7 @@
     .authentication p { margin-top: 7px; }
     .authentication label { display: block; margin: 18px 0 6px; font-size: 14px; font-weight: 650; }
     .authentication input { display: block; width: 100%; color: inherit; background: hsl(222 47% 7%); border: 1px solid #3b495f; border-radius: 8px; padding: 10px 11px; }
-    .authentication button { display: block; margin-top: 12px; border: 0; background: var(--accent); color: #10221e; padding: 9px 15px; }
-    .authentication button:hover { background: hsl(187 75% 66%); }
+    .authentication button { margin-top: 12px; }
     .authentication .notice { margin: 13px 0 0; }
 
     .section-heading { margin-bottom: 11px; display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 5px 14px; }
@@ -106,6 +105,34 @@
     .empty { color: var(--muted); padding: 13px 14px; font-size: 13px; line-height: 1.45; }
     .panel .section-note { padding: 8px 14px 11px; }
 
+    .site-nav { background: var(--panel); border-bottom: 1px solid var(--border); }
+    .nav-inner { display: flex; flex-wrap: wrap; gap: 0 18px; min-height: 0; }
+    .nav-inner button { border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; border-radius: 0; padding: 11px 0 9px; font-size: 13px; }
+    .nav-inner button:hover, .nav-inner button[aria-current="page"] { color: var(--accent); }
+    .nav-inner button[aria-current="page"] { border-bottom-color: var(--accent); }
+    .account-actions, .row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    .account-actions { justify-content: flex-end; }
+    .primary { color: #10221e; background: var(--accent); border: 0; padding: 9px 13px; }
+    .primary:hover { background: hsl(187 75% 66%); }
+    button:disabled { cursor: wait; opacity: .65; }
+    .authentication details { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); }
+    summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+    dialog.authentication { width: min(440px, calc(100% - 32px)); color: inherit; }
+    dialog::backdrop { background: rgb(0 0 0 / .65); }
+    dialog .form-actions { display: flex; gap: 8px; }
+    .upload-panel, .inspection { padding: 14px 16px; margin-bottom: 12px; }
+    .upload-panel p { margin-block: 3px 10px; }
+    .upload-control { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+    .upload-control input { max-width: 100%; }
+    .collection-table { min-width: 540px; }
+    .collection-table button { padding: 5px 8px; }
+    .selected-name { overflow-wrap: anywhere; }
+    .inspection { margin: 12px 0 0; }
+    .inspection p { margin-top: 8px; }
+    .feedback { margin-block: 9px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .feedback[data-kind="error"] { color: var(--warning); }
+    .feedback[data-kind="success"] { color: var(--accent); }
+
     @media (max-width: 680px) {
       main, .head-inner { width: calc(100% - 32px); }
       .head-inner { min-height: 60px; }
@@ -133,14 +160,23 @@
   <header class="site-header">
     <div class="head-inner">
       <div class="brand"><span class="brand-mark" aria-hidden="true">AZ</span>AdminPanelAZ</div>
-      <button id="change-token" class="secondary" type="button" hidden>Сменить токен</button>
+      <div id="account-actions" class="account-actions" hidden>
+        <button id="show-password" class="secondary" type="button">Сменить пароль</button>
+        <button id="logout" class="secondary" type="button">Выйти</button>
+      </div>
     </div>
   </header>
+  <nav id="site-nav" class="site-nav" aria-label="Разделы панели" hidden>
+    <div class="head-inner nav-inner">
+      <button type="button" data-view="monitor">Мониторинг</button>
+      <button type="button" data-view="profiles">VPN-профили</button>
+      <button type="button" data-view="backups">Резервные копии</button>
+    </div>
+  </nav>
   <main>
     <div class="title-row">
       <div>
-        <h1>Мониторинг</h1>
-        <p class="muted">Состояние сервера и VPN-подключений</p>
+        <h1 id="page-title">Вход в панель</h1>
       </div>
       <div id="connection" class="connection" hidden>
         <span id="connection-state" class="pill" role="status">Загрузка</span>
@@ -148,15 +184,43 @@
       </div>
     </div>
 
-    <noscript><p class="notice">Для мониторинга включите JavaScript в браузере.</p></noscript>
-    <form id="authentication" class="panel authentication" hidden>
-      <h2>Вход в панель</h2>
-      <p class="muted">Введите токен доступа APAZ_AUTH_TOKEN, заданный при запуске сервера.</p>
-      <label for="token">Токен доступа</label>
-      <input id="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
-      <button type="submit">Войти</button>
-      <p id="auth-error" class="notice" role="alert" hidden></p>
-    </form>
+    <noscript><p class="notice">Для работы панели включите JavaScript в браузере.</p></noscript>
+    <p id="checking-session" class="muted" role="status" hidden>Проверка сессии…</p>
+    <p id="account-notice" class="feedback" role="status" hidden></p>
+
+    <section id="authentication" class="panel authentication" aria-label="Вход в панель" hidden>
+      <form id="login" method="post">
+        <label for="username">Логин</label>
+        <input id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+        <label for="password">Пароль</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button id="login-submit" class="primary" type="submit">Войти</button>
+      </form>
+      <details id="token-access">
+        <summary>Войти по токену</summary>
+        <form id="token-login" method="post">
+          <label for="token">Токен доступа APAZ_AUTH_TOKEN</label>
+          <input id="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+          <button class="secondary" type="submit">Войти по токену</button>
+        </form>
+      </details>
+      <p id="auth-error" class="feedback" role="status" hidden></p>
+    </section>
+
+    <dialog id="password-dialog" class="panel authentication" aria-labelledby="password-title">
+      <form id="password-form" method="post">
+        <h2 id="password-title">Смена пароля</h2>
+        <label for="old-password">Текущий пароль</label>
+        <input id="old-password" type="password" autocomplete="current-password" required>
+        <label for="new-password">Новый пароль</label>
+        <input id="new-password" type="password" autocomplete="new-password" required>
+        <div class="form-actions">
+          <button id="password-submit" class="primary" type="submit">Сохранить</button>
+          <button id="password-cancel" class="secondary" type="button">Отмена</button>
+        </div>
+        <p id="password-feedback" class="feedback" role="status" hidden></p>
+      </form>
+    </dialog>
 
     <div id="dashboard" hidden>
       <p id="request-error" class="notice" hidden></p>
@@ -263,6 +327,59 @@
         </dl>
       </section>
     </div>
+
+    <section id="profiles-page" aria-label="VPN-профили" hidden>
+      <p id="profiles-feedback" class="feedback" role="status" hidden></p>
+      <div class="panel">
+        <p id="profiles-empty" class="empty">Загрузка профилей…</p>
+        <div id="profiles-scroll" class="table-scroll" role="region" aria-label="Список VPN-профилей" tabindex="0" hidden>
+          <table class="collection-table">
+            <thead><tr>
+              <th scope="col">Профиль</th><th scope="col">Протокол</th><th scope="col">Вариант</th>
+              <th scope="col" class="numeric">Размер</th><th scope="col">Действия</th>
+            </tr></thead>
+            <tbody id="profiles-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="backups-page" aria-label="Резервные копии" hidden>
+      <form id="upload-form" class="panel upload-panel" method="post">
+        <h2>Загрузить резервную копию</h2>
+        <p id="upload-limit" class="muted">Файл до 200 МиБ</p>
+        <div class="upload-control">
+          <input id="backup-file" type="file" aria-label="Файл резервной копии" aria-describedby="upload-limit" required>
+          <button id="upload-submit" class="primary" type="submit">Загрузить</button>
+        </div>
+      </form>
+      <div class="section-heading">
+        <h2 id="archives-title">Архивы</h2>
+        <button id="create-backup" class="secondary" type="button">Создать копию</button>
+      </div>
+      <p id="backups-feedback" class="feedback" role="status" hidden></p>
+      <div class="panel">
+        <p id="backups-empty" class="empty">Загрузка резервных копий…</p>
+        <div id="backups-scroll" class="table-scroll" role="region" aria-label="Список резервных копий" tabindex="0" hidden>
+          <table class="collection-table" aria-labelledby="archives-title">
+            <thead><tr>
+              <th scope="col">Архив</th><th scope="col">Изменён</th>
+              <th scope="col" class="numeric">Размер</th><th scope="col">Действия</th>
+            </tr></thead>
+            <tbody id="backups-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <section id="inspection" class="panel inspection" aria-labelledby="inspection-title" hidden>
+        <div class="section-heading">
+          <h2 id="inspection-title">Содержимое архива</h2>
+          <button id="close-inspection" type="button" class="secondary">Закрыть</button>
+        </div>
+        <p id="inspection-name" class="selected-name"></p>
+        <p id="inspection-state" class="muted" role="status"></p>
+        <ul id="inspection-components" hidden></ul>
+      </section>
+    </section>
   </main>
   <script>
     "use strict";
@@ -281,7 +398,15 @@
       timeStyle: "medium"
     });
     const sizeUnits = ["Б", "КиБ", "МиБ", "ГиБ", "ТиБ", "ПиБ", "ЭиБ"];
+    const views = {
+      monitor: { title: "Мониторинг", panel: "dashboard" },
+      profiles: { title: "VPN-профили", panel: "profiles-page" },
+      backups: { title: "Резервные копии", panel: "backups-page" }
+    };
+    const navButtons = document.querySelectorAll("[data-view]");
+    const maxBackupSize = 200 * 1024 * 1024;
     let session;
+    let inspectionRequest = 0;
 
     function savedToken() {
       try { return sessionStorage.getItem(tokenKey) || ""; }
@@ -354,7 +479,8 @@
         const record = document.createElement("tr");
         formatRow(row || {}).forEach((value, index) => {
           const cell = document.createElement("td");
-          cell.textContent = value;
+          if (value instanceof Node) cell.appendChild(value);
+          else cell.textContent = value;
           if (numericColumns.includes(index)) cell.className = "numeric";
           record.appendChild(cell);
         });
@@ -446,48 +572,94 @@
       setText("request-error", error);
     }
 
-    function stopSession() {
-      if (!session) return;
-      const previous = session;
-      session = undefined;
-      clearTimeout(previous.timer);
-      previous.controller?.abort();
+    function notice(id, message = "", kind = "") {
+      const target = element(id);
+      target.dataset.kind = kind;
+      target.textContent = message;
+      target.hidden = !message;
     }
 
-    function authenticate(error = "", focus = false) {
-      stopSession();
+    function api(path, options = {}, active = session) {
+      const url = new URL(path, location.origin);
+      if (url.origin !== location.origin || !url.pathname.startsWith("/api/")) {
+        throw new Error("Invalid API path");
+      }
+      const headers = new Headers(options.headers);
+      if (active?.token) headers.set("Authorization", "Bearer " + active.token);
+      return fetch(url, {
+        cache: "no-store",
+        credentials: active?.token ? "omit" : "same-origin",
+        redirect: "error",
+        signal: active?.controller.signal,
+        ...options,
+        headers
+      });
+    }
+
+    function stopMonitoring(active) {
+      if (!active.monitor) return;
+      const monitor = active.monitor;
+      active.monitor = undefined;
+      clearTimeout(monitor.timer);
+      monitor.controller.abort();
+    }
+
+    function requireSession(active, response, monitorRequest = false) {
+      if (active !== session) return false;
+      const tokenNeedsLogin = active.token && !monitorRequest && (response.status === 401 || response.status === 403);
+      if (tokenNeedsLogin) {
+        authenticate();
+        notice("auth-error", "Для этого раздела войдите с логином и паролем.", "error");
+        element("username").focus();
+        return false;
+      }
+      if (response.status !== 401) return true;
+      const error = active.token ? "Проверьте токен доступа." : "Сессия завершилась. Войдите снова.";
+      authenticate(error, "error", true);
+      return false;
+    }
+
+    function authenticate(message = "", kind = "", focus = false) {
+      const wasToken = Boolean(session?.token);
+      if (session) {
+        stopMonitoring(session);
+        session.controller.abort();
+        session = undefined;
+      }
       rememberToken("");
       render(null);
+      for (const { panel } of Object.values(views)) element(panel).hidden = true;
       element("connection").hidden = true;
-      element("change-token").hidden = true;
-      element("dashboard").hidden = true;
+      element("account-actions").hidden = true;
+      element("site-nav").hidden = true;
+      element("checking-session").hidden = true;
       element("authentication").hidden = false;
-      element("auth-error").hidden = !error;
-      setText("auth-error", error);
-      if (focus) element("token").focus();
+      element("password-form").reset();
+      element("upload-form").reset();
+      element("password-dialog").close();
+      closeInspection();
+      element("profiles-body").replaceChildren();
+      element("backups-body").replaceChildren();
+      element("token-access").open = Boolean(message && wasToken);
+      setText("page-title", "Вход в панель");
+      document.title = "Вход · AdminPanelAZ";
+      notice("account-notice");
+      notice("auth-error", message, kind);
+      if (focus) element(wasToken && kind === "error" ? "token" : "username").focus();
     }
 
-    async function poll(active) {
+    async function poll(active, monitor) {
       const controller = new AbortController();
-      active.controller = controller;
+      const signal = AbortSignal.any([controller.signal, monitor.controller.signal]);
       const started = performance.now();
       const timeout = setTimeout(() => controller.abort(), requestTimeout);
+      const current = () => session === active && active.monitor === monitor;
       try {
-        const response = await fetch("/api/monitor", {
-          headers: { Authorization: "Bearer " + active.token },
-          cache: "no-store",
-          credentials: "omit",
-          redirect: "error",
-          signal: controller.signal
-        });
-        if (session !== active) return;
-        if (response.status === 401 || response.status === 403) {
-          authenticate("Доступ отклонён. Проверьте токен и попробуйте снова.", true);
-          return;
-        }
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        const response = await api("/api/monitor", { signal }, active);
+        if (!current() || !requireSession(active, response, true)) return;
+        if (!response.ok) throw new Error("Monitor unavailable");
         const data = await response.json();
-        if (session !== active) return;
+        if (!current()) return;
         if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid response");
 
         render(data);
@@ -498,40 +670,231 @@
         updated.textContent = "Обновлено в " + timeFormat.format(observed);
         updated.hidden = false;
       } catch {
-        if (session !== active) return;
+        if (!current()) return;
         connectionState("error", "Нет связи",
           "Не удалось получить метрики. Запрос повторится автоматически.");
       } finally {
         clearTimeout(timeout);
-        if (session === active) {
-          active.controller = undefined;
+        if (current()) {
           const elapsed = performance.now() - started;
-          active.timer = setTimeout(() => poll(active), Math.max(0, pollInterval - elapsed));
+          monitor.timer = setTimeout(() => poll(active, monitor), Math.max(0, pollInterval - elapsed));
         }
       }
     }
 
-    function startSession(token) {
-      stopSession();
-      session = { token };
-      rememberToken(token);
-      render(null);
-      element("authentication").hidden = true;
-      element("change-token").hidden = false;
-      element("connection").hidden = false;
-      element("updated").hidden = true;
-      element("dashboard").hidden = false;
-      connectionState("loading", "Загрузка");
-      poll(session);
+    function showView(view) {
+      const active = session;
+      if (!active || active.view === view) return;
+      stopMonitoring(active);
+      if (active.view === "backups") closeInspection();
+      active.view = view;
+      for (const [key, { panel }] of Object.entries(views)) element(panel).hidden = key !== view;
+      for (const button of navButtons) {
+        if (button.dataset.view === view) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      }
+      const { title } = views[view];
+      setText("page-title", title);
+      document.title = title + " · AdminPanelAZ";
+      element("connection").hidden = view !== "monitor";
+      if (view === "monitor") {
+        element("updated").hidden = true;
+        connectionState("loading", "Загрузка");
+        active.monitor = { controller: new AbortController() };
+        poll(active, active.monitor);
+      } else {
+        loadCollection(active, view);
+      }
     }
 
-    element("authentication").addEventListener("submit", (event) => {
+    function startSession(token = "") {
+      session = { token, controller: new AbortController() };
+      rememberToken(token);
+      element("authentication").hidden = true;
+      element("checking-session").hidden = true;
+      element("account-actions").hidden = false;
+      element("show-password").hidden = Boolean(token);
+      element("site-nav").hidden = false;
+      notice("account-notice");
+      showView("monitor");
+    }
+
+    function rowActions(...actions) {
+      const container = document.createElement("div");
+      container.className = "row-actions";
+      for (const [label, handler] of actions) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary";
+        button.textContent = label;
+        button.addEventListener("click", () => handler(button));
+        container.appendChild(button);
+      }
+      return container;
+    }
+
+    function downloadName(response, fallback) {
+      const header = response.headers.get("Content-Disposition") || "";
+      const encoded = header.match(/filename\*=(?:UTF-8'')([^;]+)/i)?.[1];
+      if (encoded) {
+        try { return decodeURIComponent(encoded.trim()); }
+        catch { /* Use the plain filename. */ }
+      }
+      return header.match(/filename="([^"]+)"|filename=([^;]+)/i)?.slice(1).find(Boolean)?.trim() || fallback;
+    }
+
+    async function download(active, view, id, fallback, button) {
+      const status = view + "-feedback";
+      button.disabled = true;
+      notice(status, "Подготовка файла…");
+      try {
+        const route = "/api/" + view + "/" + encodeURIComponent(id) + "/download";
+        const response = await api(route, {}, active);
+        if (!requireSession(active, response)) return;
+        if (!response.ok) throw new Error("Download unavailable");
+        const file = await response.blob();
+        if (active !== session) return;
+        const url = URL.createObjectURL(file);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = downloadName(response, fallback);
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        notice(status, "Скачивание началось.", "success");
+      } catch {
+        if (active === session) notice(status, "Не удалось скачать файл.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function loadCollection(active, view) {
+      const profiles = view === "profiles";
+      const request = Symbol();
+      active.listRequest = request;
+      const isCurrent = () => active === session && active.view === view && active.listRequest === request;
+      const status = view + "-feedback";
+      const loading = profiles ? "Загрузка профилей…" : "Загрузка резервных копий…";
+      notice(status);
+      renderTable(view, [], () => [], loading, []);
+      try {
+        const response = await api("/api/" + view, {}, active);
+        if (!isCurrent() || !requireSession(active, response)) return;
+        if (!response.ok) throw new Error("List unavailable");
+        const data = await response.json();
+        if (!isCurrent()) return;
+        const list = profiles ? data.profiles : data.archives;
+        const rows = Array.isArray(list) ? list : [];
+        let empty = profiles ? "VPN-профилей нет." : "Резервных копий нет.";
+        if (profiles && data.state === "unavailable") empty = "Каталог VPN-профилей недоступен.";
+        renderTable(view, rows, (item) => {
+          const id = profiles ? item.id : item.name;
+          const name = metricText(item.name);
+          const fields = profiles
+            ? [name, metricText(item.protocol), metricText(item.variant), bytes(item.size_bytes)]
+            : [name, since(item.mtime), bytes(item.size_bytes)];
+          if (typeof id !== "string" || !id) return [...fields, missing];
+          const actions = [["Скачать", (button) => download(active, view, id, name, button)]];
+          if (!profiles) actions.unshift(["Содержимое", () => inspect(active, id)]);
+          return [...fields, rowActions(...actions)];
+        }, empty, profiles ? [3] : [2]);
+        if (data.truncated) {
+          const detail = profiles && isMetric(data.total) ? " из " + count(data.total) : "";
+          notice(status, "Показано " + count(rows.length) + detail + ". Список ограничен сервером.");
+        }
+      } catch {
+        if (isCurrent()) setText(view + "-empty", "Не удалось загрузить список. Откройте раздел снова.");
+      }
+    }
+
+    function closeInspection() {
+      inspectionRequest++;
+      element("inspection").hidden = true;
+      setText("inspection-name", "");
+      setText("inspection-state", "");
+      element("inspection-components").replaceChildren();
+      element("inspection-components").hidden = true;
+    }
+
+    async function inspect(active, name) {
+      closeInspection();
+      const request = inspectionRequest;
+      const current = () => active === session && request === inspectionRequest;
+      const panel = element("inspection");
+      panel.hidden = false;
+      setText("inspection-name", name);
+      setText("inspection-state", "Читаем архив…");
+      panel.scrollIntoView({ block: "nearest" });
+      try {
+        const route = "/api/backups/" + encodeURIComponent(name) + "/inspect";
+        const response = await api(route, {}, active);
+        if (!current() || !requireSession(active, response)) return;
+        if (!response.ok) throw new Error("Inspection unavailable");
+        const data = await response.json();
+        if (!current()) return;
+        const states = {
+          unavailable: "Проверка архива недоступна.",
+          invalid: "Формат архива не распознан или файл повреждён.",
+          limit_exceeded: "Архив превышает предел проверки."
+        };
+        if (data.state !== "available") {
+          setText("inspection-state", states[data.state] || states.unavailable);
+          return;
+        }
+        const format = metricText(data.format);
+        const suffix = data.encrypted ? " · Зашифрован" : "";
+        setText("inspection-state", format + suffix);
+        const list = element("inspection-components");
+        const components = {
+          db: "База данных панели",
+          cidr_db: "База данных CIDR",
+          env: "Переменные окружения",
+          lws_auth: "База учётных записей AdminPanelAZ LWS"
+        };
+        for (const item of Array.isArray(data.components) ? data.components : []) {
+          const li = document.createElement("li");
+          li.textContent = Object.hasOwn(components, item) ? components[item] : metricText(item);
+          list.appendChild(li);
+        }
+        list.hidden = list.childElementCount === 0;
+      } catch {
+        if (current()) setText("inspection-state", "Не удалось прочитать содержимое архива.");
+      }
+    }
+
+    element("login").addEventListener("submit", async (event) => {
       event.preventDefault();
+      const button = element("login-submit");
+      button.disabled = true;
+      notice("auth-error");
+      const password = element("password");
+      const body = new URLSearchParams({ username: element("username").value.trim(), password: password.value });
+      password.value = "";
+      try {
+        const response = await api("/api/auth/login", { method: "POST", body });
+        if (response.ok) startSession();
+        else if (response.status === 401 || response.status === 403) {
+          notice("auth-error", "Проверьте логин и пароль.", "error");
+          password.focus();
+        } else {
+          notice("auth-error", "Вход по паролю недоступен.", "error");
+        }
+      } catch {
+        notice("auth-error", "Не удалось связаться с сервером.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    element("token-login").addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (element("login-submit").disabled) return;
       const input = element("token");
       const token = input.value.trim();
       if (!token) {
-        element("auth-error").hidden = false;
-        setText("auth-error", "Введите токен доступа.");
+        notice("auth-error", "Введите токен доступа.", "error");
         input.focus();
         return;
       }
@@ -539,11 +902,128 @@
       startSession(token);
     });
 
-    element("change-token").addEventListener("click", () => authenticate("", true));
+    element("logout").addEventListener("click", async (event) => {
+      const active = session;
+      const button = event.currentTarget;
+      if (!active) return;
+      if (active.token) {
+        authenticate("", "", true);
+        return;
+      }
+      button.disabled = true;
+      notice("account-notice");
+      try {
+        const response = await api("/api/auth/logout", { method: "POST" }, active);
+        if (active !== session) return;
+        if (!response.ok && response.status !== 401) throw new Error("Logout failed");
+        authenticate("", "", true);
+      } catch {
+        if (active === session) notice("account-notice", "Не удалось завершить сессию. Попробуйте ещё раз.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
 
-    const initialToken = savedToken();
-    if (initialToken) startSession(initialToken);
-    else authenticate();
+    const passwordDialog = element("password-dialog");
+    const passwordForm = element("password-form");
+    element("show-password").addEventListener("click", () => {
+      passwordForm.reset();
+      notice("password-feedback");
+      passwordDialog.showModal();
+    });
+    element("password-cancel").addEventListener("click", () => passwordDialog.close());
+    passwordDialog.addEventListener("close", () => passwordForm.reset());
+    passwordForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const active = session;
+      const button = element("password-submit");
+      button.disabled = true;
+      notice("password-feedback");
+      const body = new URLSearchParams({
+        old_password: element("old-password").value,
+        new_password: element("new-password").value
+      });
+      try {
+        const response = await api("/api/auth/change-password", { method: "POST", body }, active);
+        if (active !== session) return;
+        if (response.ok) {
+          authenticate("Пароль изменён. Войдите с новым паролем.", "success", true);
+        } else {
+          notice("password-feedback", "Не удалось сменить пароль. Проверьте текущий пароль и требования к новому.", "error");
+        }
+      } catch {
+        if (active === session) notice("password-feedback", "Не удалось связаться с сервером.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    async function saveBackup(action, options, messages) {
+      const active = session;
+      const status = "backups-feedback";
+      if (!active || active.backupPending) return;
+      active.backupPending = true;
+      for (const id of ["upload-submit", "backup-file", "create-backup"]) element(id).disabled = true;
+      notice(status, messages.pending);
+      try {
+        const response = await api("/api/backups/" + action, { method: "POST", ...options }, active);
+        if (!requireSession(active, response)) return;
+        if (!response.ok) throw new Error("Backup request failed");
+        if (action === "upload") element("backup-file").value = "";
+        if (active.view === "backups") await loadCollection(active, "backups");
+        if (active === session) notice(status, messages.success, "success");
+      } catch {
+        if (active === session) notice(status, messages.error, "error");
+      } finally {
+        active.backupPending = false;
+        if (!session?.backupPending) {
+          for (const id of ["upload-submit", "backup-file", "create-backup"]) element(id).disabled = false;
+        }
+      }
+    }
+
+    element("upload-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const file = element("backup-file").files[0];
+      if (!file || !file.size || file.size > maxBackupSize) {
+        notice("backups-feedback", "Выберите непустой файл размером до 200 МиБ.", "error");
+        return;
+      }
+      saveBackup("upload", { headers: { "Content-Type": "application/octet-stream" }, body: file }, {
+        pending: "Загрузка файла…",
+        success: "Резервная копия загружена.",
+        error: "Не удалось загрузить резервную копию."
+      });
+    });
+
+    element("create-backup").addEventListener("click", () => {
+      saveBackup("create", {}, {
+        pending: "Создание резервной копии…",
+        success: "Резервная копия создана.",
+        error: "Не удалось создать резервную копию."
+      });
+    });
+
+    element("close-inspection").addEventListener("click", closeInspection);
+    for (const button of navButtons) button.addEventListener("click", () => showView(button.dataset.view));
+
+    async function initialize() {
+      element("checking-session").hidden = false;
+      try {
+        const response = await api("/api/auth/me", { signal: AbortSignal.timeout(requestTimeout) });
+        if (response.ok) {
+          startSession();
+          return;
+        }
+      } catch {
+        // Login remains available when the session check fails.
+      }
+      const token = savedToken();
+      if (token) startSession(token);
+      else authenticate();
+    }
+
+    initialize();
   </script>
 </body>
 </html>

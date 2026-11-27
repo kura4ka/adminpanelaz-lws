@@ -70,9 +70,11 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 StateDirectory=adminpanelaz-lws
 StateDirectoryMode=0700
 EnvironmentFile=/etc/adminpanelaz-lws/auth.env
+BindReadOnlyPaths=-/root/antizapret/client:/run/adminpanelaz-lws-profiles
 LoadCredential=fullchain.pem:$cert/fullchain.pem
 LoadCredential=privkey.pem:$cert/privkey.pem
 ExecStart=/usr/local/bin/adminpanelaz-lws --bind 0.0.0.0 --port 443 --data-dir /var/lib/adminpanelaz-lws --tls-cert %d/fullchain.pem --tls-key %d/privkey.pem \\
+  --auth-db /var/lib/adminpanelaz-lws/auth.db --profiles-dir /run/adminpanelaz-lws-profiles \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-antizapret-udp.status \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-antizapret-tcp.status \\
   --openvpn-status /run/adminpanelaz-lws-vpn/openvpn-vpn-udp.status \\

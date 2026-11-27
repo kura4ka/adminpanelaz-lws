@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.18)
 project(adminpanelaz_lws VERSION 0.1.0 LANGUAGES C)
 
 find_package(libwebsockets 4.1 CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+find_package(SQLite3 REQUIRED)
+find_package(LibArchive REQUIRED)
+find_package(ZLIB REQUIRED)
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS web/index.html)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/web/index.html" dashboard_hex HEX)
@@ -9,7 +13,14 @@ string(REGEX REPLACE "(..)" "0x\\1," dashboard_bytes "${dashboard_hex}")
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/dashboard.h" CONTENT
     "static const unsigned char dashboard[] = {@dashboard_bytes@};\n" @ONLY)
 
-add_executable(adminpanelaz-lws src/main.c src/host_metrics.c src/vpn_status.c src/wireguard_status.c)
+add_executable(adminpanelaz-lws src/main.c src/host_metrics.c src/vpn_status.c src/wireguard_status.c
+    src/panel_auth.c src/panel_backups.c src/panel_backup_create.c src/panel_profiles.c)
+if(TARGET SQLite3::SQLite3)
+    set(sqlite_target SQLite3::SQLite3)
+else()
+    set(sqlite_target SQLite::SQLite3)
+endif()
+target_link_libraries(adminpanelaz-lws PRIVATE OpenSSL::Crypto ${sqlite_target} LibArchive::LibArchive ZLIB::ZLIB)
 target_include_directories(adminpanelaz-lws PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_features(adminpanelaz-lws PRIVATE c_std_11)
 if(TARGET websockets_shared)

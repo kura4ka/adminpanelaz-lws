@@ -10,7 +10,7 @@ GitHub Actions отдельно собирает и проверяет прот�
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y git build-essential cmake libwebsockets-dev openssl
+sudo apt-get install -y git build-essential cmake libwebsockets-dev libssl-dev libsqlite3-dev libarchive-dev zlib1g-dev openssl
 git clone https://github.com/kura4ka/adminpanelaz-lws.git &&
 cd adminpanelaz-lws &&
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release &&
@@ -37,7 +37,9 @@ sudo sh deploy/install-systemd.sh panel.example.org
 sudo sed -n 's/^APAZ_AUTH_TOKEN=//p' /etc/adminpanelaz-lws/auth.env
 ```
 
-Откройте `https://panel.example.org/` и введите токен. Установщик включает обновление снимков OpenVPN и WireGuard через systemd каждые 10 секунд. Веб-процесс запускается под отдельным пользователем и читает только снимки. Certbot обновляет сертификат своим таймером и перезапускает панель после продления.
+Откройте `https://panel.example.org/`. При первом запуске установщик создаёт учётную запись `admin` с начальным паролем из `APAZ_AUTH_TOKEN`. После входа пароль можно поменять в панели. Токен также поддерживает прежний режим просмотра мониторинга. Для управления архивами и скачивания файлов требуется вход по паролю.
+
+Установщик включает обновление снимков OpenVPN и WireGuard через systemd каждые 10 секунд. Веб-процесс запускается под отдельным пользователем и имеет доступ на чтение к каталогу клиентских профилей через отдельное монтирование systemd. Certbot обновляет сертификат своим таймером и перезапускает панель после продления.
 
 Передайте `--ui-dir /path/to/frontend/dist`, чтобы включить раздачу файлов из доверенной сборки React. Страница `index.html` загружается при запуске с лимитом 32 КиБ. Ссылки Vite на `./assets/` преобразуются в `/assets/` для прямого перехода на вложенные страницы. Для HTTPS добавьте `--tls-cert /path/to/cert.pem --tls-key /path/to/key.pem`. Без сертификата сервер слушает только IPv4 loopback. Сервер поддерживает HTTP/1.1 и до 12 одновременных сессий SSE/WS.
 
@@ -56,7 +58,7 @@ curl -H "Authorization: Bearer $APAZ_AUTH_TOKEN" http://127.0.0.1:8000/api/monit
 curl -N -H "Authorization: Bearer $APAZ_AUTH_TOKEN" http://127.0.0.1:8000/api/monitor/events
 ```
 
-На текущем этапе доступен встроенный мониторинг локального VPS и прототип загрузки файлов. Управление VPN-клиентами, удалённые узлы, оригинальные учётные записи, Telegram, CIDR и восстановление бэкапов предстоит перенести.
+На текущем этапе доступны мониторинг локального VPS, один локальный администратор с хранимыми в SQLite сессиями, просмотр и скачивание существующих профилей AntiZapret и загрузка, просмотр содержимого и скачивание бэкапов. Новая нативная копия содержит SQLite-базу учётных записей C-панели без действующих сессий. Для старого формата `APAZBK1` панель определяет, что архив зашифрован. Изменение VPN-клиентов, удалённые узлы, миграция учётных записей оригинала, Telegram, CIDR и восстановление бэкапов предстоит перенести.
 
 ## Проверка
 

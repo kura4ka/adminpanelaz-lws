@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlencode
 
 
 HOST = "127.0.0.1"
@@ -286,6 +287,78 @@ def check_backup(client, data_dir):
     require(list(stored.parent.iterdir()) == [stored], "Rejected requests left backup files behind")
 
 
+def check_admin(command, data, log, tls):
+    profiles = data / "profiles"
+    names = profiles / "wireguard" / "vpn"
+    names.mkdir(parents=True)
+    profile = b"# test profile\n"
+    (names / "vpn-test-wg.conf").write_bytes(profile)
+    if os.name == "posix":
+        (names / "vpn-hidden-wg.conf").symlink_to(names / "vpn-test-wg.conf")
+    port = choose_port()
+    client = PanelClient(port, tls=tls)
+    command = [command[0], "--port", str(port), "--data-dir", str(data),
+               "--auth-db", str(data / "auth.db"), "--profiles-dir", str(profiles), *command[9:]]
+
+    def post(path, payload, headers=None):
+        with closing(client.connection()) as conn:
+            conn.request("POST", path, urlencode(payload),
+                         {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8", **(headers or {})})
+            with conn.getresponse() as response:
+                return response.status, response.getheader("Set-Cookie"), response.read()
+
+    def login(password):
+        status, cookie, _ = post("/api/auth/login", {"username": "admin", "password": password})
+        require(status == 200 and cookie, f"Login returned {status}")
+        require("HttpOnly" in cookie and "SameSite=Strict" in cookie and (not tls or "; Secure" in cookie),
+                "Session cookie attributes are missing")
+        return {"Cookie": cookie.split(";", 1)[0]}
+
+    with run_panel(command, log) as process:
+        wait_for_server(process, client)
+        status, _, _ = post("/api/auth/login", {"username": "admin", "password": TOKEN},
+                            {"Origin": "https://example.invalid"})
+        require(status == 403, "Accepted a cross-origin login request")
+        require(client.request("GET", "/api/profiles", headers=AUTH)[0] == 401,
+                "Legacy monitor token could read profiles")
+        cookie = login(TOKEN)
+        second_session = login(TOKEN)
+        status, body = client.request("GET", "/api/auth/me", headers=cookie)
+        require(status == 200 and json_object(body, "Session")["method"] == "session", "Session was not retained")
+        status, body = client.request("GET", "/api/profiles", headers=cookie)
+        require(status == 200, f"Profiles returned {status}")
+        if os.name == "posix":
+            available = json_object(body, "Profiles")
+            require(available["total"] == 1, "Profile listing included a symlink or omitted the profile")
+            item = available["profiles"][0]
+            require(client.request("GET", f"/api/profiles/{item['id']}/download", headers=cookie) == (200, profile),
+                    "Profile download differs from original bytes")
+        status, body = client.request("GET", "/api/backups", headers=cookie)
+        require(status == 200 and isinstance(json_object(body, "Backups")["archives"], list), "Backup list failed")
+        status, body = client.request("POST", "/api/backups/upload", body=b"APAZBK1\nfixture",
+                                      headers={**cookie, "Content-Type": "application/octet-stream"})
+        require(status == 201, f"Protected backup upload returned {status}: {body!r}")
+        name = json_object(body, "Protected upload")["name"]
+        status, body = client.request("GET", f"/api/backups/{name}/inspect", headers=cookie)
+        require(status == 200 and json_object(body, "Inspection")["encrypted"], "Legacy encrypted format not recognized")
+        require(client.request("GET", f"/api/backups/{name}/download", headers=cookie) == (200, b"APAZBK1\nfixture"),
+                "Backup download differs from original bytes")
+        status, body = client.request("POST", "/api/backups/create", headers=cookie)
+        require(status == 201, f"Native backup creation returned {status}: {body!r}")
+        name = json_object(body, "Native backup")["name"]
+        status, body = client.request("GET", f"/api/backups/{name}/inspect", headers=cookie)
+        require(status == 200 and "lws_auth" in json_object(body, "Native inspection")["components"],
+                "Native backup component not recognized")
+        new_password = "Смена пароля 1 + & % !"
+        status, cleared, _ = post("/api/auth/change-password", {"old_password": TOKEN, "new_password": new_password}, cookie)
+        require(status == 200 and cleared and "Max-Age=0" in cleared, f"Password change returned {status}")
+        require(client.request("GET", "/api/auth/me", headers=cookie)[0] == 401 and
+                client.request("GET", "/api/auth/me", headers=second_session)[0] == 401, "Old sessions still work")
+        cookie = login(new_password)
+        require(client.request("POST", "/api/auth/logout", headers=cookie)[0] == 200, "Logout failed")
+        require(client.request("GET", "/api/auth/me", headers=cookie)[0] == 401, "Revoked session still works")
+
+
 def choose_port():
     with socket.socket() as sock:
         sock.bind((HOST, 0))
@@ -358,6 +431,7 @@ def main():
                 check_backup(client, data)
                 check_health(client)
             check_bundled_dashboard(command, data, log, tls=args.tls_cert is not None)
+            check_admin(command, data, log, tls=args.tls_cert is not None)
         except (AssertionError, OSError, ValueError, http.client.HTTPException) as error:
             print(f"Smoke test failed: {error}", file=sys.stderr)
             if log.is_file():
@@ -366,7 +440,7 @@ def main():
                     print(output.read().decode("utf-8", errors="replace"), file=sys.stderr, end="")
             return 1
 
-    print("Smoke test passed: health, SPA, monitor, SSE, WebSocket, and backup upload")
+    print("Smoke test passed: health, SPA, monitor, SSE, WebSocket, sessions, profiles, and backups")
     return 0
 
 

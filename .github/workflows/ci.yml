@@ -18,7 +18,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential ca-certificates cmake git libwebsockets-dev openssl python3
+          apt-get install -y --no-install-recommends build-essential ca-certificates cmake git libwebsockets-dev libssl-dev libsqlite3-dev libarchive-dev zlib1g-dev openssl python3
       - uses: actions/checkout@v6
       - name: Compile
         run: |
@@ -40,7 +40,7 @@ jobs:
       - name: Build release binary
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebsockets-dev
+          sudo apt-get install -y libwebsockets-dev libssl-dev libsqlite3-dev libarchive-dev zlib1g-dev
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
       - name: Check HTTP, HTTPS and 20 MiB cgroup limit
