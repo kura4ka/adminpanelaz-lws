@@ -292,9 +292,9 @@ def check_admin(command, data, log, tls):
     names = profiles / "wireguard" / "vpn"
     names.mkdir(parents=True)
     profile = b"# test profile\n"
-    (names / "vpn-test-wg.conf").write_bytes(profile)
+    (names / "vpn-test-(panel.example.org)-wg.conf").write_bytes(profile)
     if os.name == "posix":
-        (names / "vpn-hidden-wg.conf").symlink_to(names / "vpn-test-wg.conf")
+        (names / "vpn-hidden-wg.conf").symlink_to(names / "vpn-test-(panel.example.org)-wg.conf")
     port = choose_port()
     client = PanelClient(port, tls=tls)
     command = [command[0], "--port", str(port), "--data-dir", str(data),

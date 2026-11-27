@@ -32,7 +32,7 @@ static bool allowed_name(const char *name, const struct profile_variant *variant
 {
     size_t length = strlen(name), suffix = strlen(variant->suffix);
     return length > suffix && length <= 128 && name[0] != '.' &&
-        strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-") == length &&
+        strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-()") == length &&
         !strcmp(name + length - suffix, variant->suffix);
 }
 
